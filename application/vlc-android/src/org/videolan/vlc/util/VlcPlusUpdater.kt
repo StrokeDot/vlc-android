@@ -161,8 +161,9 @@ object VlcPlusUpdater {
 
                 val actual = digest.digest().joinToString("") { "%02x".format(it.toInt() and 0xff) }
                 if (actual != expected) throw IOException("Downloaded APK checksum does not match release")
-                validateAndroidPackage(activity, temp)
                 if (!temp.renameTo(complete)) throw IOException("Could not prepare VLC Plus APK")
+                // PackageManager expects a final APK archive path, not the .part download.
+                validateAndroidPackage(activity, complete)
                 complete
             } catch (e: Exception) {
                 temp.delete()
