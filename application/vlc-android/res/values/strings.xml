@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- BlueVLC experimental feature; intentionally distinct from upstream VLC wording. -->
+    <string name="bluevlc_cast_subtitle_experimental">Experimental casting subtitles: you can choose a track, but some receivers may not display it.</string>
+</resources>
