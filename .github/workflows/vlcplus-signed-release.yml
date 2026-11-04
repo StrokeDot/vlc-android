@@ -59,8 +59,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Upstream Gradle can output a universal -all.apk if its release
+          # task-name pattern does not recognize a fully qualified task path.
+          # Both a native ARM64 split and a universal APK support Android ARM64.
           APK="$(find application/app/build/outputs/apk -name 'VLC-Plus-*-arm64-v8a.apk' -print -quit)"
-          test -n "$APK" || { echo "::error::ARM64 signed APK not found"; exit 1; }
+          if [[ -z "$APK" ]]; then
+            APK="$(find application/app/build/outputs/apk -name 'VLC-Plus-*-all.apk' -print -quit)"
+          fi
+          test -n "$APK" || { echo "::error::No ARM64 or universal signed APK found"; exit 1; }
           VERIFIER="$(find "$ANDROID_SDK/build-tools" -type f -name apksigner | sort -V | tail -1)"
           test -n "$VERIFIER" || { echo "::error::apksigner was not installed"; exit 1; }
           "$VERIFIER" verify --print-certs "$APK"
