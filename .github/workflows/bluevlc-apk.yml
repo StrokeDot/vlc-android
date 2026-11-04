@@ -14,6 +14,9 @@ jobs:
     # Mirrors VideoLAN's Android-3.0 app build environment and init command.
     container:
       image: registry.videolan.org/vlc-debian-android-3.0:20260701183656
+      # VideoLAN's image defaults to an unprivileged user, which cannot write
+      # GitHub Actions' mounted _runner_file_commands directory during checkout.
+      options: --user 0:0
     steps:
       - uses: actions/checkout@v4
       - name: Initialize upstream Android toolchain and VLC dependencies
