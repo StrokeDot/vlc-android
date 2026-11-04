@@ -1,0 +1,114 @@
+name: VLC Plus signed release
+on:
+  workflow_dispatch:
+  push:
+    # One-time bootstrap: creating this branch tests signing secrets and publishes
+    # the first signed APK. Subsequent releases use versioned tags / dispatch.
+    branches: [vlcplus/first-signed-release]
+    tags: [vlcplus-*]
+permissions:
+  contents: write
+
+jobs:
+  build-signed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    container:
+      image: registry.videolan.org/vlc-debian-android-3.0:20260701183656
+      options: --user 0:0
+    env:
+      VLCPLUS_KEYSTORE_BASE64: ${{ secrets.VLCPLUS_KEYSTORE_BASE64 }}
+      VLCPLUS_SIGNING_PASSWORD: ${{ secrets.VLCPLUS_SIGNING_PASSWORD }}
+      ORG_GRADLE_PROJECT_storealias: ${{ secrets.VLCPLUS_SIGNING_ALIAS }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify release signing secrets exist
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$VLCPLUS_KEYSTORE_BASE64" || { echo "::error::Set VLCPLUS_KEYSTORE_BASE64 in repository Actions secrets"; exit 1; }
+          test -n "$VLCPLUS_SIGNING_PASSWORD" || { echo "::error::Set VLCPLUS_SIGNING_PASSWORD in repository Actions secrets"; exit 1; }
+          test -n "$ORG_GRADLE_PROJECT_storealias" || { echo "::error::Set VLCPLUS_SIGNING_ALIAS in repository Actions secrets"; exit 1; }
+      - name: Configure temporary signing key
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          printf '%s' "$VLCPLUS_KEYSTORE_BASE64" | base64 -d > "$GITHUB_WORKSPACE/.vlcplus-release-signing.jks"
+          # No keys or passwords are committed, logged, or added to artifacts.
+          echo "ORG_GRADLE_PROJECT_keyStoreFile=$GITHUB_WORKSPACE/.vlcplus-release-signing.jks" >> "$GITHUB_ENV"
+          echo "PASSWORD_KEYSTORE=$VLCPLUS_SIGNING_PASSWORD" >> "$GITHUB_ENV"
+      - name: Validate release code and initialize VLC toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config --global user.name "VLC Plus CI"
+          git config --global user.email "vlcplus-ci@users.noreply.github.com"
+          CODE="$(sed -n 's/^[[:space:]]*versionCode = \([0-9]*\).*/\1/p' build.gradle | head -1)"
+          test -n "$CODE" || { echo "::error::Could not read versionCode"; exit 1; }
+          if [[ "$GITHUB_REF" == refs/tags/* && "$GITHUB_REF_NAME" != "vlcplus-$CODE" ]]; then
+            echo "::error::Tag must equal vlcplus-$CODE"
+            exit 1
+          fi
+          ./buildsystem/compile.sh --init
+      - name: Assemble signed release APK
+        shell: bash
+        run: ./gradlew :application:app:assembleSignedRelease --no-daemon --stacktrace
+      - name: Verify APK signature and create checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Upstream Gradle can output a universal -all.apk if its release
+          # task-name pattern does not recognize a fully qualified task path.
+          # Both a native ARM64 split and a universal APK support Android ARM64.
+          APK="$(find application/app/build/outputs/apk -name 'VLC-Plus-*-arm64-v8a.apk' -print -quit)"
+          if [[ -z "$APK" ]]; then
+            APK="$(find application/app/build/outputs/apk -name 'VLC-Plus-*-all.apk' -print -quit)"
+          fi
+          test -n "$APK" || { echo "::error::No ARM64 or universal signed APK found"; exit 1; }
+          VERIFIER="$(find "$ANDROID_SDK/build-tools" -type f -name apksigner | sort -V | tail -1)"
+          test -n "$VERIFIER" || { echo "::error::apksigner was not installed"; exit 1; }
+          "$VERIFIER" verify --print-certs "$APK"
+          mkdir -p signed-release
+          cp "$APK" signed-release/
+          (cd signed-release && sha256sum "$(basename "$APK")" > "$(basename "$APK").sha256")
+      - name: Upload signed APK and checksum
+        uses: actions/upload-artifact@v4
+        with:
+          name: VLC-Plus-signed-arm64
+          path: signed-release/*
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    needs: build-signed
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: VLC-Plus-signed-arm64
+          path: signed-release
+      - name: Publish signed assets as a GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          CODE="$(sed -n 's/^[[:space:]]*versionCode = \([0-9]*\).*/\1/p' build.gradle | head -1)"
+          TAG="vlcplus-$CODE"
+          if [[ "$GITHUB_REF" == refs/tags/* && "$GITHUB_REF_NAME" != "$TAG" ]]; then
+            echo "::error::Ref tag differs from APK versionCode"
+            exit 1
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::Release $TAG exists. Increment versionCode before publishing a new update."
+            exit 1
+          fi
+          gh release create "$TAG" signed-release/* \
+            --target "$GITHUB_SHA" \
+            --title "VLC Plus $TAG" \
+            --notes "Independent signed VLC Plus Android release. ARM64 APK; includes SHA-256 checksum. Not affiliated with VideoLAN. Signed APKs can update prior VLC Plus installs made with the same signing key."

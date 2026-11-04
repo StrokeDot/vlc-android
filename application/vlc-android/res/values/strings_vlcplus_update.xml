@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="vlc_plus_check_update">Check for VLC Plus updates</string>
+    <string name="vlc_plus_check_update_summary">Download verified releases from StrokeDot on GitHub</string>
+    <string name="vlc_plus_update_available">VLC Plus update available</string>
+    <string name="vlc_plus_update_description">A newer signed VLC Plus release is available: %1$s. Download and install it without deleting your current data?</string>
+    <string name="vlc_plus_no_update">VLC Plus is up to date (or no signed release is published yet).</string>
+    <string name="vlc_plus_update_error">Could not check or install VLC Plus update: %1$s</string>
+    <string name="vlc_plus_install">Download and install</string>
+    <string name="vlc_plus_downloading">Downloading and verifying VLC Plus…</string>
+    <string name="vlc_plus_install_permission">Allow VLC Plus to install apps in Android settings, then tap Check for VLC Plus updates again.</string>
+</resources>

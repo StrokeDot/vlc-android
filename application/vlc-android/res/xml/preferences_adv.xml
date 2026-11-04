@@ -151,15 +151,9 @@
                 android:title="@string/debug_logs"/>
 
         <PreferenceScreen
-                android:key="nightly_install"
-                android:title="@string/install_nightly"/>
-
-        <CheckBoxPreference
-                app:singleLineTitle="false"
-                android:defaultValue="false"
-                android:key="show_update"
-                android:summary="@string/update_nightly_summary"
-                android:title="@string/update_nightly"/>
+                android:key="vlc_plus_check_update"
+                android:summary="@string/vlc_plus_check_update_summary"
+                android:title="@string/vlc_plus_check_update"/>
 
         <EditTextPreference
                 android:defaultValue=""

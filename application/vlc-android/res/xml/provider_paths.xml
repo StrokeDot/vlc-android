@@ -4,6 +4,8 @@
             name="external_files"
             path="."/>
     <root-path name="external_files" path="/storage/" />
+    <!-- Private APK downloaded by VLC Plus's update checker. -->
+    <cache-path name="vlc_plus_update_cache" path="." />
     <files-path
         name="files"
         path="."/>
