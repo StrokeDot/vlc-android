@@ -96,18 +96,21 @@ class VideoTracksDialog : VLCBottomSheetDialogFragment() {
                 binding.audioTracks.trackTitle.contentDescription = getString(R.string.talkback_audio_tracks)
             }
             playbackService.spuTracks?.let { trackList ->
-                if (!playbackService.hasRenderer()) {
-                    val trackAdapter = TrackAdapter(generateTrackList(trackList), trackList.firstOrNull { it.getId() == playbackService.spuTrack }, getString(R.string.track_text))
-                    trackAdapter.setOnTrackSelectedListener { track ->
-                        trackSelectionListener.invoke(track.getId(), TrackType.SPU)
-                    }
-                    binding.subtitleTracks.trackList.adapter = trackAdapter
-                } else {
-                    binding.subtitleTracks.emptyView.text = getString(R.string.no_sub_renderer)
-                    binding.subtitleTracks.emptyView.setVisible()
-                    binding.subtitleTracks.trackMore.setGone()
+                // BlueVLC experiment: allow an explicit subtitle track selection even
+                // while a renderer is connected. The upstream app hides this control.
+                // Note that LibVLC / the Cast receiver may still ignore the selection.
+                val trackAdapter = TrackAdapter(generateTrackList(trackList), trackList.firstOrNull { it.getId() == playbackService.spuTrack }, getString(R.string.track_text))
+                trackAdapter.setOnTrackSelectedListener { track ->
+                    trackSelectionListener.invoke(track.getId(), TrackType.SPU)
                 }
-                if (trackList.isEmpty()) binding.subtitleTracks.emptyView.setVisible()
+                binding.subtitleTracks.trackList.adapter = trackAdapter
+                binding.subtitleTracks.emptyView.setGone()
+                if (playbackService.hasRenderer()) {
+                    binding.subtitleTracks.emptyView.text = getString(R.string.bluevlc_cast_subtitle_experimental)
+                    binding.subtitleTracks.emptyView.setVisible()
+                } else if (trackList.isEmpty()) {
+                    binding.subtitleTracks.emptyView.setVisible()
+                }
                 binding.subtitleTracks.trackTitle.contentDescription = getString(R.string.talkback_subtitle_tracks)
             }
             if (playbackService.spuTracks == null) binding.subtitleTracks.emptyView.setVisible()
