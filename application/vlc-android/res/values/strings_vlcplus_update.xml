@@ -9,4 +9,6 @@
     <string name="vlc_plus_install">Download and install</string>
     <string name="vlc_plus_downloading">Downloading and verifying VLC Plus…</string>
     <string name="vlc_plus_install_permission">Allow VLC Plus to install apps in Android settings, then tap Check for VLC Plus updates again.</string>
+    <string name="vlcplus_cast_subtitle_experimental">Experimental: subtitles can be selected during casting, but the receiver may not display them yet.</string>
+    <string name="vlcplus_cast_audio_compatibility">No sound on TV? Disable Audio Passthrough first. If audio is still missing, VLC Plus needs a compatible audio-conversion path.</string>
 </resources>
