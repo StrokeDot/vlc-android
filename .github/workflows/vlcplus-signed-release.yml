@@ -2,6 +2,9 @@ name: VLC Plus signed release
 on:
   workflow_dispatch:
   push:
+    # One-time bootstrap: creating this branch tests signing secrets and publishes
+    # the first signed APK. Subsequent releases use versioned tags / dispatch.
+    branches: [vlcplus/first-signed-release]
     tags: [vlcplus-*]
 permissions:
   contents: write
