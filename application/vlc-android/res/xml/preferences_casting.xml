@@ -18,6 +18,13 @@
                 android:summary="@string/casting_audio_only_summary"
                 android:title="@string/casting_audio_only"
                 android:dependency="enable_casting"/>
+        <!-- Keeping passthrough disabled asks LibVLC to convert audio for
+             Chromecast receivers rather than forwarding unsupported codecs. -->
+        <Preference
+                android:title="@string/vlcplus_cast_audio_help_title"
+                android:summary="@string/vlcplus_cast_audio_compatibility"
+                android:selectable="false"
+                android:dependency="enable_casting"/>
         <CheckBoxPreference
                 android:key="casting_passthrough"
                 android:defaultValue="false"
