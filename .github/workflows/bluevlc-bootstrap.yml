@@ -1,0 +1,31 @@
+name: VLC Plus source checks
+on:
+  push:
+    branches: [bluevlc/bootstrap]
+  pull_request:
+  workflow_dispatch:
+jobs:
+  verify-branding:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check independent app ID and launcher resources (not an APK build)
+        shell: python
+        run: |
+          from pathlib import Path
+          root = Path('build.gradle').read_text()
+          app = Path('application/app/build.gradle').read_text()
+          label = Path('application/app/src/main/res/values/strings.xml').read_text()
+          ico = Path('application/app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml').read_text()
+          fg = Path('application/app/src/main/res/drawable/bluevlc_launcher_foreground.xml').read_text()
+          bg = Path('application/app/src/main/res/drawable/bluevlc_launcher_background.xml').read_text()
+          colors = Path('application/resources/src/main/res/values/colors.xml').read_text()
+          assert 'appId = "com.strokedot.bluevlc"' in root
+          assert 'def outputName = "VLC-Plus-"' in app
+          assert '>VLC Plus</string>' in label
+          assert '@drawable/bluevlc_launcher_foreground' in ico
+          assert '@drawable/bluevlc_launcher_background' in ico
+          assert '#167AFF' in fg and '#2486EF' in bg
+          assert '<color name="orange500">#167AFF</color>' in colors
+          assert '<color name="orange800">#1455BF</color>' in colors
+          print('VLC Plus naming, theme and identity verified; Android compilation still pending.')
