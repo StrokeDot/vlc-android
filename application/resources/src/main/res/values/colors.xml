@@ -6,27 +6,29 @@
     <color name="red">#bb0000</color>
 
 <!--
-    Material color swatches
+    VLC Plus: Blue UI palette. The upstream resource identifiers still use
+    their historical 'orange' names; retain these identifiers to keep all
+    existing theme, vector and Kotlin resource references working.
     The main color is always xxx500
 -->
-    <color name="orange50">#fff3e0</color>
-    <color name="orange100">#ffdfae</color>
-    <color name="orange200">#ffca7d</color>
-    <color name="orange300">#ffb54c</color>
-    <color name="orange400">#ffa11a</color>
-    <color name="orange500">#FF8800</color>
-    <color name="orange600">#ff7d00</color>
-    <color name="orange700">#ff7200</color>
-    <color name="orange800">#ff610a</color>
-    <color name="orange900">#ff5014</color>
+    <color name="orange50">#EAF3FF</color>
+    <color name="orange100">#D5E8FF</color>
+    <color name="orange200">#ACD2FF</color>
+    <color name="orange300">#7AB6FF</color>
+    <color name="orange400">#4A98FF</color>
+    <color name="orange500">#167AFF</color>
+    <color name="orange600">#086BEA</color>
+    <color name="orange700">#075BD2</color>
+    <color name="orange800">#1455BF</color>
+    <color name="orange900">#073779</color>
 
     <color name="red500transparent_10">#1aff0000</color>
     <color name="red500transparent25">#40ff0000</color>
     <color name="red500transparent">#b4ff0000</color>
     <color name="red200">#EF9A9A</color>
-    <color name="orange500transparent">#b4ff8800</color>
-    <color name="orange500focus">#86ff8800</color>
-    <color name="orange200transparent">#64ffca7d</color>
+    <color name="orange500transparent">#B4167AFF</color>
+    <color name="orange500focus">#86167AFF</color>
+    <color name="orange200transparent">#64ACD2FF</color>
 
     <color name="green50">#bdeadd</color>
     <color name="green100">#a7e3d1</color>
@@ -53,7 +55,7 @@
     <color name="grey900">#212121</color>
 
     <color name="action_mode_dark">@color/grey875</color>
-    <color name="action_mode_light">#fff3e0</color>
+    <color name="action_mode_light">#EAF3FF</color>
 
 
     <color name="dark_background">#131313</color>
@@ -112,9 +114,9 @@
     <color name="black_transparent_80">#cc000000</color>
     <color name="black_transparent_90">#E6000000</color>
 
-    <color name="orange_800_transparent_10">#1aff610a</color>
-    <color name="orange_800_transparent_20">#33ff610a</color>
-    <color name="orange_500_transparent_20">#33FF8800</color>
+    <color name="orange_800_transparent_10">#1A1455BF</color>
+    <color name="orange_800_transparent_20">#331455BF</color>
+    <color name="orange_500_transparent_20">#33167AFF</color>
 
     <color name="tv_bg">#34434e</color>
     <color name="tv_card_content">#34434e</color>

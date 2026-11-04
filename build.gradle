@@ -63,7 +63,7 @@ ext {
     appId = "com.strokedot.bluevlc"
     versionCode = 3070200
     vlcMajorVersion = project.hasProperty('forceVlc4') && project.getProperty('forceVlc4') ? 4 : 3
-    versionName = vlcMajorVersion == 3 ? '3.7.2-bluevlc.1' : '4.0.0-preview-bluevlc.1 - ' + versionCode
+    versionName = vlcMajorVersion == 3 ? '3.7.2-vlcplus.2' : '4.0.0-preview-vlcplus.2 - ' + versionCode
     remoteAccessVersion = '0.27.0'
     libvlcVersion = vlcMajorVersion == 3 ? '3.7.7' :'4.0.0-eap29'
     medialibraryVersion = (vlcMajorVersion == 3 ? '0.13.24' : '0.13.22-vlc4')

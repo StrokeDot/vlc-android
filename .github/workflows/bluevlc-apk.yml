@@ -1,4 +1,4 @@
-name: BlueVLC Android debug APK
+name: VLC Plus Android debug APK
 on:
   push:
     branches: [bluevlc/bootstrap]
@@ -24,7 +24,7 @@ jobs:
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           # VLC's native source preparation applies patch commits. Git needs an
           # identity for those temporary CI-only commits (not a developer identity).
-          git config --global user.name "BlueVLC CI"
+          git config --global user.name "VLC Plus CI"
           git config --global user.email "bluevlc-ci@users.noreply.github.com"
           git -C application/vlc-android rev-parse --short HEAD
       - name: Initialize upstream Android toolchain and VLC dependencies
@@ -37,9 +37,9 @@ jobs:
       - name: Compile debug APK
         shell: bash
         run: ./gradlew :application:app:assembleDebug --no-daemon --stacktrace
-      - name: Upload BlueVLC APK
+      - name: Upload VLC Plus APK
         uses: actions/upload-artifact@v4
         with:
-          name: BlueVLC-debug-apk
-          path: application/app/build/outputs/apk/debug/BlueVLC-*.apk
+          name: VLC-Plus-debug-apk
+          path: application/app/build/outputs/apk/debug/VLC-Plus-*.apk
           if-no-files-found: error
