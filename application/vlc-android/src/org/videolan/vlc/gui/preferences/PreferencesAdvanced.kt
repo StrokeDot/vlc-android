@@ -102,7 +102,7 @@ import org.videolan.vlc.gui.helpers.restartMediaPlayer
 import org.videolan.vlc.gui.preferences.search.PreferenceParser
 import org.videolan.vlc.isVLC4
 import org.videolan.vlc.providers.PickerType
-import org.videolan.vlc.util.AutoUpdate
+import org.videolan.vlc.util.VlcPlusUpdater
 import org.videolan.vlc.util.FileUtils
 import org.videolan.vlc.util.Permissions
 import org.videolan.vlc.util.share
@@ -232,23 +232,64 @@ class PreferencesAdvanced : BasePreferenceFragment(), SharedPreferences.OnShared
                 startActivity(intent)
                 return true
             }
-            "nightly_install" -> {
-
-                android.app.AlertDialog.Builder(requireActivity())
-                        .setTitle(resources.getString(R.string.install_nightly))
-                        .setMessage(resources.getString(R.string.install_nightly_alert))
-                        .setPositiveButton(R.string.ok){ _, _ ->
-                            requireActivity().lifecycleScope.launch {
-                                AutoUpdate.checkUpdate(requireActivity().application, true) {url, date ->
-                                    val updateDialog = UpdateDialog().apply {
-                                        arguments = bundleOf(UPDATE_URL to url, UPDATE_DATE to date.time, NEW_INSTALL to true)
+            "vlc_plus_check_update" -> {
+                // Unlike the original VLC nightly updater, this points only to
+                // independently signed VLC Plus releases on StrokeDot GitHub.
+                val host = activity ?: return true
+                host.lifecycleScope.launch {
+                    try {
+                        val available = VlcPlusUpdater.checkLatest()
+                        if (available == null) {
+                            android.app.AlertDialog.Builder(host)
+                                .setTitle(R.string.vlc_plus_check_update)
+                                .setMessage(R.string.vlc_plus_no_update)
+                                .setPositiveButton(R.string.ok, null)
+                                .show()
+                        } else {
+                            android.app.AlertDialog.Builder(host)
+                                .setTitle(R.string.vlc_plus_update_available)
+                                .setMessage(getString(R.string.vlc_plus_update_description, available.title))
+                                .setPositiveButton(R.string.vlc_plus_install) { _, _ ->
+                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+                                        !host.packageManager.canRequestPackageInstalls()) {
+                                        startActivity(
+                                            Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES)
+                                                .setData(("package:" + host.packageName).toUri())
+                                        )
+                                        Toast.makeText(host, R.string.vlc_plus_install_permission, Toast.LENGTH_LONG).show()
+                                    } else {
+                                        val dialog = android.app.AlertDialog.Builder(host)
+                                            .setMessage(R.string.vlc_plus_downloading)
+                                            .setView(android.widget.ProgressBar(host))
+                                            .setCancelable(false)
+                                            .create()
+                                        dialog.show()
+                                        host.lifecycleScope.launch {
+                                            try {
+                                                VlcPlusUpdater.downloadAndPromptInstall(host, available)
+                                            } catch (error: Exception) {
+                                                android.app.AlertDialog.Builder(host)
+                                                    .setTitle(R.string.vlc_plus_check_update)
+                                                    .setMessage(getString(R.string.vlc_plus_update_error, error.message ?: "Unknown error"))
+                                                    .setPositiveButton(R.string.ok, null)
+                                                    .show()
+                                            } finally {
+                                                dialog.dismiss()
+                                            }
+                                        }
                                     }
-                                    updateDialog.show(requireActivity().supportFragmentManager, "fragment_update")
                                 }
-                            }
+                                .setNegativeButton(R.string.cancel, null)
+                                .show()
                         }
-                        .setNegativeButton(R.string.cancel, null)
-                        .show()
+                    } catch (error: Exception) {
+                        android.app.AlertDialog.Builder(host)
+                            .setTitle(R.string.vlc_plus_check_update)
+                            .setMessage(getString(R.string.vlc_plus_update_error, error.message ?: "Unknown error"))
+                            .setPositiveButton(R.string.ok, null)
+                            .show()
+                    }
+                }
                 return true
             }
             "clear_history" -> {
