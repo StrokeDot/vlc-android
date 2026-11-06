@@ -1,0 +1,15 @@
+name: Direct Cast protocol and streaming tests
+on:
+  push:
+    branches: [vlcplus/direct-cast-subtitles]
+  pull_request:
+jobs:
+  core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - run: bash buildsystem/test-direct-cast.sh
