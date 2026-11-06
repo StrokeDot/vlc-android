@@ -1,0 +1,27 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+}
+
+def castSources = layout.buildDirectory.dir('generated/cast-source')
+def copyCastPreparation = tasks.register('copyCastPreparation', Copy) {
+    from '../vlc-android/src/org/videolan/vlc/cast/CastPreparation.kt'
+    into castSources
+}
+
+android {
+    namespace = 'com.strokedot.vlcplus.codectests'
+    defaultConfig {
+        applicationId 'com.strokedot.vlcplus.codectests'
+        minSdk = 21
+        testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
+    }
+    sourceSets.main.java.srcDir castSources.get().asFile
+}
+tasks.named('preBuild').configure { dependsOn copyCastPreparation }
+
+dependencies {
+    androidTestImplementation 'androidx.test:runner:1.5.2'
+    androidTestImplementation 'androidx.test.ext:junit:1.1.5'
+    androidTestImplementation 'junit:junit:4.13.2'
+}

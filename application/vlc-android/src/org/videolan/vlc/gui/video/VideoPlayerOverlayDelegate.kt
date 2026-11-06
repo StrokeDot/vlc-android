@@ -795,7 +795,8 @@ class VideoPlayerOverlayDelegate (private val player: VideoPlayerActivity) {
     }
 
     fun updateRendererVisibility() {
-        if (::hudRightBinding.isInitialized) hudRightBinding.videoRenderer.visibility = if (player.isLocked || RendererDelegate.renderers.value.isNullOrEmpty()) View.GONE else View.VISIBLE
+        if (::hudRightBinding.isInitialized) hudRightBinding.videoRenderer.visibility = if (player.isLocked ||
+            (android.os.Build.VERSION.SDK_INT < 21 && RendererDelegate.renderers.value.isNullOrEmpty())) View.GONE else View.VISIBLE
     }
 
     private val titleConstraintSetLandscape = ConstraintSet()

@@ -1,7 +1,7 @@
 name: VLC Plus Android debug APK
 on:
   push:
-    branches: [bluevlc/bootstrap, vlcplus/in-app-updater]
+    branches: [bluevlc/bootstrap, vlcplus/in-app-updater, vlcplus/direct-cast-subtitles]
   workflow_dispatch:
 permissions:
   contents: read
@@ -36,10 +36,42 @@ jobs:
           ./buildsystem/compile.sh --init
       - name: Compile debug APK
         shell: bash
-        run: ./gradlew :application:app:assembleDebug --no-daemon --stacktrace
+        run: ./gradlew :application:app:assembleDebug :application:cast-tests:assembleDebug :application:cast-tests:assembleDebugAndroidTest -PcastCodecTests=true --no-daemon --stacktrace
       - name: Upload VLC Plus APK
         uses: actions/upload-artifact@v4
         with:
           name: VLC-Plus-debug-apk
           path: application/app/build/outputs/apk/debug/VLC-Plus-*.apk
           if-no-files-found: error
+      - name: Upload isolated codec fixture APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: Direct-Cast-codec-test-apks
+          path: application/cast-tests/build/outputs/apk/**/*.apk
+          if-no-files-found: error
+
+  codec-fixtures:
+    needs: android-debug
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: Direct-Cast-codec-test-apks
+          path: codec-apks
+      - name: Enable emulator acceleration
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Verify preparation on Android codecs
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 31
+          arch: x86_64
+          disable-animations: true
+          script: |
+            adb install -r codec-apks/debug/cast-tests-debug.apk
+            adb install -r codec-apks/androidTest/debug/cast-tests-debug-androidTest.apk
+            adb shell am instrument -w -r com.strokedot.vlcplus.codectests.test/androidx.test.runner.AndroidJUnitRunner | tee codec-result.txt
+            grep -q 'OK (2 tests)' codec-result.txt
