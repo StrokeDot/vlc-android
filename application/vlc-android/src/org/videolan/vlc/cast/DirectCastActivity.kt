@@ -72,7 +72,7 @@ class DirectCastActivity : AppCompatActivity(), CastControlsView.Actions {
         .coerceIn(0, current.duration.coerceAtLeast(0))
 
     private fun render() {
-        controls.render(current.title.ifBlank { intent.getStringExtra("title") ?: "Cast to TV" }, current.device,
+        controls.render((if (sameMovie()) current.title else "").ifBlank { intent.getStringExtra("title") ?: "Cast to TV" }, current.device,
             current.message, current.active, current.connected, current.preparing, current.playing,
             position(), current.duration, current.volume, if (current.connected) current.subtitle else pendingSubtitle != null)
     }
@@ -117,13 +117,15 @@ class DirectCastActivity : AppCompatActivity(), CastControlsView.Actions {
             }.show()
     }
 
+    private fun sameMovie() = movieUri()?.toString() == current.mediaUri
+
     private fun movieUri(): Uri? = (intent.getStringExtra("uri") ?: current.mediaUri.takeIf { it.isNotBlank() })?.let { Uri.parse(it) }
 
     private fun openMovieFolder() {
         lifecycleScope.launch {
             val uri = movieUri()
             val resolved = withContext(Dispatchers.IO) {
-                if (uri?.scheme == "content") runCatching { FileUtils.getPathFromURI(uri) }.getOrNull()?.takeIf { it.startsWith("file:") }?.let(Uri::parse) else uri
+                uri?.let { CastMovieLocation.localFile(this@DirectCastActivity, it) }
             }
             val parent = resolved?.takeIf { it.scheme == "file" || it.scheme == null }?.let { FileUtils.getParent(it.toString()) }
             if (parent == null) { openSystemPicker(); return@launch }
@@ -134,11 +136,8 @@ class DirectCastActivity : AppCompatActivity(), CastControlsView.Actions {
 
     private fun openSystemPicker() {
         val picker = Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*")
-        val path = movieUri()?.path
-        if (Build.VERSION.SDK_INT >= 26 && path != null && path.startsWith("/storage/")) {
-            val rest = if (path.startsWith("/storage/emulated/0/")) "primary:" + path.removePrefix("/storage/emulated/0/").substringBeforeLast('/', "")
-                else path.removePrefix("/storage/").substringBefore('/') + ":" + path.removePrefix("/storage/").substringAfter('/', "").substringBeforeLast('/', "")
-            picker.putExtra(DocumentsContract.EXTRA_INITIAL_URI, DocumentsContract.buildDocumentUri("com.android.externalstorage.documents", rest))
+        if (Build.VERSION.SDK_INT >= 26) movieUri()?.let { CastMovieLocation.initialFolder(it) }?.let {
+            picker.putExtra(DocumentsContract.EXTRA_INITIAL_URI, it)
         }
         startActivityForResult(picker, PICK_SYSTEM_SUBTITLE)
     }
@@ -179,8 +178,8 @@ class DirectCastActivity : AppCompatActivity(), CastControlsView.Actions {
         val service = Intent(this, DirectCastService::class.java).setAction(DirectCastService.CONNECT)
             .putExtra("uri", uri).putExtra("host", host).putExtra("port", info.port)
             .putExtra("device", name(info)).putExtra("title", intent.getStringExtra("title") ?: current.title)
-            .putExtra("position", if (current.duration > 0) position() else intent.getLongExtra("position", 0))
-            .putExtra("duration", current.duration.takeIf { it > 0 } ?: intent.getLongExtra("duration", 0))
+            .putExtra("position", if (sameMovie() && current.duration > 0) position() else intent.getLongExtra("position", 0))
+            .putExtra("duration", current.duration.takeIf { sameMovie() && it > 0 } ?: intent.getLongExtra("duration", 0))
             .putExtra("convert", convertBeforeConnect).putExtra("subtitle", pendingSubtitle)
         convertBeforeConnect = false
         ContextCompat.startForegroundService(this, service)

@@ -20,6 +20,7 @@ internal object CastAudioPreparation {
                 progress: (String) -> Unit): CastPreparation.Prepared = try {
         CastPreparation.prepare(context, uri, directory, true, check, progress)
     } catch (unsupported: CastPreparation.AudioUnsupported) {
+        File(directory, "prepared.mp4").delete()
         prepareWithVlc(context, unsupported.input, directory, check, progress)
     }
 

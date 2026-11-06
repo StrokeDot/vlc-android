@@ -53,6 +53,41 @@ class CastControllerDeviceTest {
         } finally { resolver.delete(uri, null, null) }
     }
 
+    @Test fun subtitleFolderHandlesDocumentAndFileUris() {
+        val authority = "com.android.externalstorage.documents"
+        for (path in listOf("primary:Movies/Film/movie.mkv", "ABCD-1234:Movies/Film/movie.mkv", "primary:movie.mkv")) {
+            val uri = android.provider.DocumentsContract.buildDocumentUri(authority, path)
+            val parent = CastMovieLocation.initialFolder(uri)!!
+            val expected = path.substringBefore(':') + ":" + path.substringAfter(':').substringBeforeLast('/', "")
+            assertEquals(expected, android.provider.DocumentsContract.getDocumentId(parent))
+        }
+        assertEquals("primary:Movies/Film", android.provider.DocumentsContract.getDocumentId(
+            CastMovieLocation.initialFolder(Uri.parse("file:///storage/emulated/0/Movies/Film/movie.mkv"))!!))
+    }
+
+    @Test fun progressAndReceiverUpdatesAreAtomicAndStopIsTerminal() {
+        data class State(val active: Boolean, val progress: Int = 0, val position: Int = 0, val preparing: Boolean = true)
+        val store = CastStateStore(State(true)) { it.active }
+        val gate = java.util.concurrent.CountDownLatch(1)
+        val workers = (0 until 4).map { worker ->
+            Thread {
+                gate.await()
+                repeat(500) {
+                    if (worker % 2 == 0) store.update { it.copy(progress = it.progress + 1) }
+                    else store.update { it.copy(position = it.position + 1) }
+                }
+            }.apply { start() }
+        }
+        gate.countDown(); workers.forEach { it.join() }
+        assertEquals(1000, store.value.progress); assertEquals(1000, store.value.position)
+        store.update { it.copy(preparing = false) }
+        store.update { it.copy(active = false) }
+        assertNull(store.update { it.copy(active = true, preparing = true, position = -1) })
+        assertFalse(store.value.active); assertFalse(store.value.preparing); assertEquals(1000, store.value.position)
+        store.update(true) { State(true) }
+        assertTrue(store.value.active); assertEquals(0, store.value.position)
+    }
+
     @Test fun activePlaybackKeepsActionsAvailableAndAvoidsSystemBars() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         ActivityScenario.launch(ControllerPreviewActivity::class.java).use { scenario ->

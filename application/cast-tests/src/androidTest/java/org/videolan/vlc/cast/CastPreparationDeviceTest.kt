@@ -73,6 +73,7 @@ class CastPreparationDeviceTest {
             val input = File(folder, "dolby.mkv")
             instrumentation.context.assets.open("cast-dolby.mkv").use { source -> input.outputStream().use { source.copyTo(it) } }
             val output = CastAudioPreparation.prepare(context, Uri.fromFile(input), folder, {}, {}).file
+            output.copyTo(File(context.getExternalFilesDir(null), "cast-dolby-output.mp4"), overwrite = true)
             assertEquals(samples(input, "video/").hash, samples(output, "video/").hash)
             val audio = samples(output, "audio/")
             assertTrue(audio.mime in listOf("audio/mpeg", "audio/mp4a-latm"))

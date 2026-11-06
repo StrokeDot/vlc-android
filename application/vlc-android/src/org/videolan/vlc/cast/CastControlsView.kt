@@ -159,6 +159,7 @@ class CastControlsView(context: Context, private val actions: Actions) : ScrollV
     }
     private fun image(glyph: Glyph, description: String, size: Int, action: () -> Unit) = ImageButton(context).apply {
         setImageDrawable(GlyphDrawable(glyph, white)); contentDescription = description
+        scaleType = ImageView.ScaleType.FIT_CENTER
         background = null; setPadding(dp(10), dp(10), dp(10), dp(10)); minimumWidth = dp(size); minimumHeight = dp(size)
         setOnClickListener { action() }
     }
