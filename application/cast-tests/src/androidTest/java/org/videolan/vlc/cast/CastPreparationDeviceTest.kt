@@ -245,7 +245,7 @@ class CastPreparationDeviceTest {
         val folder = File(context.cacheDir, "conversion-timing-${System.nanoTime()}").apply { mkdirs() }
         try {
             val input = File(folder, "input.mkv")
-            java.util.zip.GZIPInputStream(instrumentation.context.assets.open("cast-long.mkv.gz")).use { source -> input.outputStream().use { source.copyTo(it) } }
+            java.util.zip.GZIPInputStream(instrumentation.context.assets.open("cast-long.fixture")).use { source -> input.outputStream().use { source.copyTo(it) } }
             val legacy = File(folder, "legacy").apply { mkdirs() }
             val fast = File(folder, "fast").apply { mkdirs() }
             val audio = File(legacy, "audio.m4a")

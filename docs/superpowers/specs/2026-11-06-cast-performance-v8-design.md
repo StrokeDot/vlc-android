@@ -33,3 +33,13 @@ Record phase timing to distinguish conversion, validation and fallback cost.
 Do not tune an already stable HTTP path by guessing; exercise sustained concurrent
 range/caption delivery and preserve current buffering unless measurements expose
 a bottleneck. Publish .8 with the existing package/key only after review and tests.
+
+The second experiment (mp4frag with 1000ms media buffering) failed: 31/72 AVC
+frames and 30/72 HEVC frames survived, and composition timestamps were wrong
+(confirmed by FFmpeg decoding, not only Android metadata). Native fragmented
+MuxFrag consumes one queued packet per send and cannot drain the initial backlog
+reliably. The next candidate uses the bundled avformat MP4 writer, whose Mux()
+loops over queued packets with a one-packet minimum, writes PTS/DTS using 64-bit
+stream rescaling, and closes with av_write_trailer. It produces a standard
+indexed MP4 with moov at the end, avoiding a faststart relocation pass. The
+source and tests retain the same preservation, seeking and fallback requirements.

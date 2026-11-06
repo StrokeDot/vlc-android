@@ -119,6 +119,7 @@ jobs:
             adb shell wm density 520
             adb shell am instrument -w -r com.strokedot.vlcplus.codectests.test/androidx.test.runner.AndroidJUnitRunner | tee codec-result.txt
             adb logcat -d -s VLCPlus/CastPerf:I > cast-performance.txt
+            adb logcat -d > cast-device-log.txt
             adb pull /sdcard/Android/data/com.strokedot.vlcplus.codectests/files/. cast-diagnostics
             grep -q 'OK (14 tests)' codec-result.txt
 
@@ -130,6 +131,7 @@ jobs:
           path: |
             cast-diagnostics/
             cast-performance.txt
+            cast-device-log.txt
             codec-result.txt
           if-no-files-found: warn
           retention-days: 30
