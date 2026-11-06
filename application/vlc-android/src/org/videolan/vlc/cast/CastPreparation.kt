@@ -67,14 +67,29 @@ internal object CastPreparation {
         return Prepared(output, "video/mp4")
     }
 
-    /** Attach native-decoded AAC while preserving all original video samples and timestamps. */
+    /** Attach finished AAC; the caller only supplies a file, this method owns its extractor. */
     fun withAudio(input: File, compatibleAudio: File, directory: File, check: () -> Unit,
                   progress: (String) -> Unit): Prepared {
-        val video = MediaExtractor(); val audio = MediaExtractor()
-        val output = File(directory, "prepared.mp4")
+        val audio = MediaExtractor()
+        try {
+            audio.setDataSource(compatibleAudio.path)
+            return muxAudio(input, audio, directory, "prepared.mp4", "Preparing video with compatible audio", false, check, progress)
+        } finally { audio.release() }
+    }
+
+    /** Caller owns the live audio extractor; video bytes/timestamps use the same validated copy path. */
+    fun withAudioStream(input: File, audio: MediaExtractor, directory: File, check: () -> Unit,
+                        progress: (String) -> Unit): Prepared =
+        muxAudio(input, audio, directory, "pipelined.mp4", "Preparing audio and video", true, check, progress)
+
+    private fun muxAudio(input: File, audio: MediaExtractor, directory: File, outputName: String,
+                         label: String, normalizeAudio: Boolean, check: () -> Unit,
+                         progress: (String) -> Unit): Prepared {
+        val video = MediaExtractor()
+        val output = File(directory, outputName)
         var muxer: MediaMuxer? = null; var started = false
         try {
-            video.setDataSource(input.path); audio.setDataSource(compatibleAudio.path)
+            video.setDataSource(input.path)
             val videoTrack = (0 until video.trackCount).firstOrNull { video.getTrackFormat(it).getString(MediaFormat.KEY_MIME)?.startsWith("video/") == true }
                 ?: error("No video track found")
             val audioTrack = (0 until audio.trackCount).firstOrNull { audio.getTrackFormat(it).getString(MediaFormat.KEY_MIME) == "audio/mp4a-latm" }
@@ -89,6 +104,8 @@ internal object CastPreparation {
             mux.setOrientationHint(rotation)
             val muxVideo = mux.addTrack(videoFormat); val muxAudio = mux.addTrack(audioFormat)
             video.selectTrack(videoTrack); audio.selectTrack(audioTrack)
+            val audioOrigin = if (normalizeAudio) audio.sampleTime.coerceAtLeast(0) else 0L
+            fun audioTime() = if (audio.sampleTime < 0) -1L else audio.sampleTime - audioOrigin
             val data = ByteBuffer.allocateDirect(maxOf(bufferSize(videoFormat), bufferSize(audioFormat)))
             val info = MediaCodec.BufferInfo()
             val duration = if (videoFormat.containsKey(MediaFormat.KEY_DURATION)) videoFormat.getLong(MediaFormat.KEY_DURATION) else 0L
@@ -96,19 +113,20 @@ internal object CastPreparation {
             var reported = -1
             while (video.sampleTime >= 0 || audio.sampleTime >= 0) {
                 check(); data.clear()
-                val useVideo = video.sampleTime >= 0 && (audio.sampleTime < 0 || video.sampleTime <= audio.sampleTime)
+                val audioTime = audioTime()
+                val useVideo = video.sampleTime >= 0 && (audioTime < 0 || video.sampleTime <= audioTime)
                 val source = if (useVideo) video else audio
                 require(source.sampleFlags and MediaExtractor.SAMPLE_FLAG_ENCRYPTED == 0) { "Protected video cannot be prepared" }
                 val size = source.readSampleData(data, 0)
-                if (size < 0) break
-                info.set(0, size, source.sampleTime.coerceAtLeast(0), source.sampleFlags and MediaExtractor.SAMPLE_FLAG_SYNC)
+                require(size >= 0) { "The media file ended before its declared samples" }
+                info.set(0, size, (if (useVideo) video.sampleTime else audioTime).coerceAtLeast(0), source.sampleFlags and MediaExtractor.SAMPLE_FLAG_SYNC)
                 mux.writeSampleData(if (useVideo) muxVideo else muxAudio, data, info)
                 val percent = if (duration > 0) (info.presentationTimeUs * 100 / duration).toInt().coerceIn(0, 99) else 0
-                if (percent != reported) { reported = percent; progress("Preparing video with compatible audio… $percent%") }
+                if (percent != reported) { reported = percent; progress("$label… $percent%") }
                 source.advance()
             }
         } finally {
-            try { if (started) muxer?.stop() } finally { muxer?.release(); video.release(); audio.release() }
+            try { if (started) muxer?.stop() } finally { muxer?.release(); video.release() }
         }
         check()
         return Prepared(output, "video/mp4")

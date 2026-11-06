@@ -15,15 +15,13 @@ internal object CastAudioPreparation {
         CastPreparation.prepare(context, uri, directory, true, check, progress)
     } catch (unsupported: CastPreparation.AudioUnsupported) {
         File(directory, "prepared.mp4").delete()
-        val output = File(directory, "native-prepared.mp4")
+        val output = File(directory, "pipelined.mp4")
         val started = SystemClock.elapsedRealtime()
         try {
-            CastNativePreparation.convert(context, unsupported.input, output, true, check, progress)
-            val converted = SystemClock.elapsedRealtime()
-            progress("Checking prepared video…")
-            require(CastVideoValidation.matches(unsupported.input, output, check)) { "Native output needs the compatibility fallback" }
-            Log.i("VLCPlus/CastPerf", "path=native-combined conversionMs=${converted - started} validationMs=${SystemClock.elapsedRealtime() - converted}")
-            CastPreparation.Prepared(output, "video/mp4")
+            require(android.os.Build.VERSION.SDK_INT >= 23) { "Use compatibility preparation on this Android version" }
+            val prepared = CastPipelinedPreparation.prepare(context, unsupported.input, directory, check, progress)
+            Log.i("VLCPlus/CastPerf", "path=pipelined totalMs=${SystemClock.elapsedRealtime() - started}")
+            prepared
         } catch (cancelled: CancellationException) { output.delete(); throw cancelled }
         catch (failed: Exception) {
             output.delete(); check()

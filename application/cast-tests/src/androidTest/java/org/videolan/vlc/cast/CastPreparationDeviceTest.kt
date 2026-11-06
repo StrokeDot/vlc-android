@@ -90,6 +90,7 @@ class CastPreparationDeviceTest {
     }
 
     private fun assertSameVideo(input: File, output: File) {
+        assertEquals("Original compressed video and timeline", samples(input, "video/"), samples(output, "video/"))
         val expected = decoded(input, "video/"); val actual = decoded(output, "video/")
         assertEquals("Decoded video frame count", expected.count, actual.count)
         assertEquals("Decoded video pixels", expected.hash, actual.hash)
@@ -139,7 +140,7 @@ class CastPreparationDeviceTest {
             output.copyTo(File(context.getExternalFilesDir(null), "cast-dolby-output.mp4"), overwrite = true)
             assertSameVideo(input, output)
             assertTrue(CastVideoValidation.matches(input, output, {}))
-            assertEquals("Expected one-pass output", "native-prepared.mp4", output.name)
+            assertEquals("Expected one-pass output", "pipelined.mp4", output.name)
             val audio = samples(output, "audio/")
             assertEquals("audio/mp4a-latm", audio.mime)
             assertTrue("Converted audio must contain an audible signal", decoded(output, "audio/").peak > 256)
@@ -160,8 +161,7 @@ class CastPreparationDeviceTest {
         try {
             val input = File(folder, name)
             instrumentation.context.assets.open(name).use { source -> input.outputStream().use { source.copyTo(it) } }
-            val output = File(folder, "output.mp4")
-            CastNativePreparation.convert(context, input, output, true, {}, {})
+            val output = CastAudioPreparation.prepare(context, Uri.fromFile(input), folder, {}, {}).file
             output.copyTo(File(context.getExternalFilesDir(null), name.removeSuffix(".mkv") + "-output.mp4"), overwrite = true)
             assertTrue(CastVideoValidation.matches(input, output, {}))
             assertSameVideo(input, output)
@@ -181,7 +181,7 @@ class CastPreparationDeviceTest {
             instrumentation.context.assets.open("cast-dolby.mkv").use { source -> input.outputStream().use { source.copyTo(it) } }
             try {
                 CastAudioPreparation.prepare(context, Uri.fromFile(input), folder, {
-                    if (File(folder, "native-prepared.mp4").exists()) throw java.util.concurrent.CancellationException("Cancel fixture")
+                    if (File(folder, "pipelined.mp4").exists()) throw java.util.concurrent.CancellationException("Cancel fixture")
                 }, {})
                 fail("Preparation must propagate cancellation")
             } catch (_: java.util.concurrent.CancellationException) { }
@@ -254,14 +254,17 @@ class CastPreparationDeviceTest {
             val old = CastPreparation.withAudio(input, audio, legacy, {}, {}).file
             val oldDuration = android.os.SystemClock.elapsedRealtime() - started
             val begin = android.os.SystemClock.elapsedRealtime()
-            var intermediate = false
+            val maxAudioBytes = java.util.concurrent.atomic.AtomicLong(0)
+            val muxAudioBytes = java.util.concurrent.atomic.AtomicLong(-1)
             val output = CastAudioPreparation.prepare(context, Uri.fromFile(input), fast, {
-                intermediate = intermediate || File(fast, "compatible-audio.m4a").exists()
+                val bytes = File(fast, "audio-stream.ts").length()
+                maxAudioBytes.updateAndGet { maxOf(it, bytes) }
+                if (File(fast, "pipelined.mp4").length() > 0) muxAudioBytes.compareAndSet(-1, bytes)
             }, {}).file
             val newDuration = android.os.SystemClock.elapsedRealtime() - begin
             android.util.Log.i("VLCPlus/CastPerf", "fixture=120s-60fps baselineMs=$oldDuration combinedMs=$newDuration inputBytes=${input.length()}")
-            assertFalse("Fast preparation must not create a separate audio file", intermediate)
-            assertEquals("native-prepared.mp4", output.name)
+            assertTrue("Video muxing must overlap audio encoding", muxAudioBytes.get() >= 0 && muxAudioBytes.get() < maxAudioBytes.get())
+            assertEquals("pipelined.mp4", output.name)
             assertTrue(CastVideoValidation.matches(input, old, {}))
             assertTrue(CastVideoValidation.matches(input, output, {}))
             assertTrue(decoded(output, "audio/").peak > 256)

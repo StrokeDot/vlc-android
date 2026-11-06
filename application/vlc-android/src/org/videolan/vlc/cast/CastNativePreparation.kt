@@ -12,11 +12,11 @@ import java.io.File
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 
-/** Native AAC encoding plus optional video passthrough in one finalized output. */
+/** Native AAC encoding plus audio-only MP4 or a live MPEG-TS stream for the Android video muxer. */
 internal object CastNativePreparation {
-    fun convert(context: Context, input: File, output: File, copyVideo: Boolean,
+    fun convert(context: Context, input: File, output: File, streaming: Boolean,
                 check: () -> Unit, progress: (String) -> Unit): File {
-        val label = if (copyVideo) "Preparing compatible video and audio" else "Converting audio with VLC"
+        val label = "Converting audio with VLC"
         progress("$label…")
         val engine = LibVLC(context, arrayListOf("--no-video-title-show", "--verbose=0"))
         var media: Media? = null
@@ -28,15 +28,12 @@ internal object CastNativePreparation {
             val duration = source.duration
             // Wait for Stopped/INPUT_EVENT_DEAD: EndReached is emitted before
             // native stream output teardown, where buffered packets are finalized.
-            // VLC's native MP4 writers retain tail packets; the fragmented writer
-            // also corrupts B-frame composition offsets. Its bundled FFmpeg
-            // muxer drains queued packets and writes standard MP4 sample tables.
-            val mux = if (copyVideo) "avformat{mux=mp4,reset-ts=1}" else "mp4"
-            source.addOption(":sout=#transcode{acodec=mp4a,ab=192,channels=2}:standard{access=file,mux=$mux,dst='${output.path}'}")
-            // Reserve media-time buffering for the AAC encoder to register its track
-            // before the MP4 header is written. This is not a wall-clock sleep.
-            source.addOption(":sout-mux-caching=${if (copyVideo) 1000 else 0}")
-            if (!copyVideo) source.addOption(":no-sout-video")
+            val mux = if (streaming) "ts" else "mp4"
+            val resample = if (streaming) ",samplerate=48000" else ""
+            source.addOption(":sout=#transcode{acodec=mp4a,ab=192,channels=2$resample}:standard{access=file,mux=$mux,dst='${output.path}'}")
+            source.addOption(":sout-mux-caching=0")
+            source.addOption(":no-sout-video")
+            source.addOption(":no-sout-spu")
             val done = CastConversionSignal()
             val position = AtomicLong(0)
             val converter = MediaPlayer(engine); player = converter

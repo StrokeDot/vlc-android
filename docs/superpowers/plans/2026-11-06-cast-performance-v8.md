@@ -4,7 +4,7 @@
 
 **Goal:** Remove the normal second movie-writing pass from Dolby audio preparation while preserving stable playback, seeking and captions.
 
-**Architecture:** Add a native combined AAC/video-copy path with completion at Stopped, then validate frame metadata before using it. Keep .7 audio-only/Android remux as fallback. Preserve the existing HTTP serving strategy and test concurrent sustained transfers.
+**Architecture:** Overlap native audio-only TS encoding with the existing Android video/AAC copy path using a growing MediaDataSource. Keep .7 audio-only/Android remux as fallback. Preserve the existing HTTP serving strategy and test concurrent sustained transfers.
 
 **Tech Stack:** Kotlin, LibVLC 3.7.7, Android MediaExtractor, Java HTTP server.
 
@@ -23,10 +23,10 @@
 - Provider content files: retain URI staging ownership and cleanup.
 - Busy HTTP requests: concurrent ranges plus captions must complete with exact payloads.
 
-### Task 1: Native combined preparation
+### Task 1: Concurrent audio/video preparation
 - [ ] Add regression cases comparing .7's intermediate-audio behavior against single-pass preparation, plus H264 B-frame and HEVC fixtures and completion/error/cancellation checks.
-- [ ] Implement CastNativePreparation.convert(input, output, copyVideo, check, progress), waiting for Stopped and draining native output before return.
-- [ ] Validate output frame count, relative timestamp span, size/rotation and stereo AAC with MediaExtractor; select existing .7 fallback on mismatch.
+- [ ] Implement audio-only CastNativePreparation.convert plus CastPipelinedPreparation, waiting for Stopped and feeding timestamped AAC to the existing Android muxer while encoding runs.
+- [ ] Test exact video sample/timestamp preservation, decoded pixels, size/rotation and stereo AAC; select existing .7 fallback on live-source failure.
 - [ ] Record phase duration and whether the fallback was necessary. Keep one accurate progress phase per actual operation.
 - [ ] Run Android codec tests, compare all decoded fixture frames and record a larger-clip timing comparison.
 
