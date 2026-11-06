@@ -198,6 +198,7 @@ import org.videolan.vlc.gui.dialogs.RENAME_DIALOG_MEDIA
 import org.videolan.vlc.gui.dialogs.RENAME_DIALOG_NEW_NAME
 import org.videolan.vlc.gui.dialogs.RenderersDialog
 import org.videolan.vlc.cast.DirectCastActivity
+import org.videolan.vlc.cast.DirectCastService
 import org.videolan.vlc.gui.dialogs.SleepTimerDialog
 import org.videolan.vlc.gui.dialogs.VLCBottomSheetDialogFragment.Companion.shouldInterceptRemote
 import org.videolan.vlc.gui.dialogs.adapters.VlcTrack
@@ -1192,6 +1193,7 @@ open class VideoPlayerActivity : AppCompatActivity(), PlaybackService.Callback, 
         if (requestCode == DirectCastActivity.REQUEST) {
             if (resultCode == RESULT_FIRST_USER && supportFragmentManager.findFragmentByTag("renderers") == null)
                 RenderersDialog().show(supportFragmentManager, "renderers")
+            else if (DirectCastService.state.value?.active == true) finish()
             return
         }
         if (data == null) return
@@ -2180,6 +2182,10 @@ open class VideoPlayerActivity : AppCompatActivity(), PlaybackService.Callback, 
     @SuppressLint("SdCardPath")
     @TargetApi(12)
     protected open fun loadMedia(fromStart: Boolean = false, forceUsingNew:Boolean = false) {
+        if (DirectCastService.state.value?.active == true) {
+            service?.pause()
+            return
+        }
         if (fromStart) {
             askResume = false
             intent.putExtra(PLAY_EXTRA_FROM_START, fromStart)

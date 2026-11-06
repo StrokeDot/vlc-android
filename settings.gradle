@@ -23,3 +23,4 @@ include ':application:tools', ':application:resources', ':application:mediadb', 
 include ':application:vlc-android'
 include ':application:moviepedia'
 include ':application:remote-access-client'
+if (hasProperty('castCodecTests')) include ':application:cast-tests'

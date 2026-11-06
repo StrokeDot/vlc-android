@@ -101,7 +101,7 @@ class DirectCastActivity : AppCompatActivity() {
             prepare.isEnabled = !state.active
             disconnect.isEnabled = state.active
             subtitles.isEnabled = !state.preparing
-            clearSubtitles.isEnabled = state.subtitle || pendingSubtitle != null
+            clearSubtitles.isEnabled = !state.preparing && (state.subtitle || pendingSubtitle != null)
             if (!dragging && state.duration > 0) seek.progress = (state.position * 1000 / state.duration).toInt().coerceIn(0, 1000)
             time.text = "${format(state.position)} / ${format(state.duration)}"
             renderReceivers()

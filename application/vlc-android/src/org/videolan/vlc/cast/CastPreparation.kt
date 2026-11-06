@@ -169,7 +169,14 @@ internal object CastPreparation {
                         require(!format.containsKey("pcm-encoding") || format.getInteger("pcm-encoding") == AudioFormat.ENCODING_PCM_16BIT) { "This audio decoder does not provide supported PCM" }
                         channels = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
                         sampleRate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
-                        require(channels in 1..8 && sampleRate > 0)
+                        // Avoid silently discarding channels in uncommon PCM layouts.
+                        // These are the standard mono/stereo/5.1/7.1 layouts below.
+                        require(channels in listOf(1, 2, 6, 8) && sampleRate > 0) { "This audio layout needs VLC casting" }
+                        if (channels > 2 && format.containsKey(MediaFormat.KEY_CHANNEL_MASK)) {
+                            val mask = format.getInteger(MediaFormat.KEY_CHANNEL_MASK)
+                            val expected = if (channels == 6) AudioFormat.CHANNEL_OUT_5POINT1 else AudioFormat.CHANNEL_OUT_7POINT1_SURROUND
+                            require(mask == 0 || mask == expected) { "This audio channel layout needs VLC casting" }
+                        }
                         val aac = MediaFormat.createAudioFormat("audio/mp4a-latm", sampleRate, channels.coerceAtMost(2))
                         aac.setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
                         aac.setInteger(MediaFormat.KEY_BIT_RATE, 192000)

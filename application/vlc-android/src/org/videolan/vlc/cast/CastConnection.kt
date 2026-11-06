@@ -35,6 +35,7 @@ internal class CastConnection(
     @Volatile private var mediaSession: Long? = null
     private var receiverSession: String? = null
     private var launching = false
+    @Volatile private var loading = false
 
     fun start() {
         scope.launch {
@@ -72,9 +73,20 @@ internal class CastConnection(
                         HEARTBEAT -> if (data.optString("type") == "PING") send("receiver-0", HEARTBEAT, JSONObject().put("type", "PONG"))
                         RECEIVER -> receiverStatus(data)
                         MEDIA -> when (data.optString("type")) {
-                            "MEDIA_STATUS" -> data.optJSONArray("status")?.optJSONObject(0)?.let {
-                                if (it.has("mediaSessionId")) mediaSession = it.getLong("mediaSessionId")
-                                status(it)
+                            "MEDIA_STATUS" -> {
+                                val media = data.optJSONArray("status")?.optJSONObject(0)
+                                when (CastSessionPolicy.media(media?.optString("playerState") ?: "",
+                                    media?.optString("idleReason") ?: "", loading, mediaSession != null)) {
+                                    CastSessionPolicy.UPDATE -> if (media != null) {
+                                        if (media.has("mediaSessionId")) mediaSession = media.getLong("mediaSessionId")
+                                        loading = false; status(media)
+                                    }
+                                    CastSessionPolicy.ERROR -> throw IllegalStateException("The receiver cannot play this file. Try Prepare audio for TV or VLC casting.")
+                                    CastSessionPolicy.END -> {
+                                        status(media ?: JSONObject().put("playerState", "IDLE").put("idleReason", "CANCELLED"))
+                                        close()
+                                    }
+                                }
                             }
                             "LOAD_FAILED", "LOAD_CANCELLED", "INVALID_REQUEST" -> throw IllegalStateException("The receiver could not play this file. Try Prepare audio for TV, or VLC casting.")
                         }
@@ -102,10 +114,15 @@ internal class CastConnection(
             }
             return
         }
-        if (!launching) {
-            launching = true
-            send("receiver-0", RECEIVER, JSONObject().put("type", "LAUNCH").put("appId", DEFAULT_APP))
-        } else if (transport != null) throw IllegalStateException("Casting ended on the receiver")
+        when (CastSessionPolicy.receiverGone(transport != null, launching)) {
+            CastSessionPolicy.END -> {
+                status(JSONObject().put("playerState", "IDLE").put("idleReason", "CANCELLED")); close()
+            }
+            CastSessionPolicy.LAUNCH -> {
+                launching = true
+                send("receiver-0", RECEIVER, JSONObject().put("type", "LAUNCH").put("appId", DEFAULT_APP))
+            }
+        }
     }
 
     private fun connect(destination: String) = send(destination, CONNECTION, JSONObject().put("type", "CONNECT").put("origin", JSONObject()).put("userAgent", "VLC Plus"))
@@ -119,6 +136,7 @@ internal class CastConnection(
     }
 
     fun load(url: String, mime: String, title: String, positionMs: Long, subtitleUrl: String?, autoplay: Boolean = true) {
+        loading = true
         val media = JSONObject().put("contentId", url).put("contentType", mime).put("streamType", "BUFFERED")
             .put("metadata", JSONObject().put("metadataType", 0).put("title", title))
         val command = JSONObject().put("type", "LOAD").put("media", media)

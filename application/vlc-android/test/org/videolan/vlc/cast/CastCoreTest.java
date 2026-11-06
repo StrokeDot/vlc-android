@@ -16,6 +16,15 @@ public final class CastCoreTest {
     }
     private interface Throwing { void run() throws Exception; }
     public static void main(String[] args) throws Exception {
+        check(CastSessionPolicy.receiverGone(true,false)==CastSessionPolicy.END);
+        check(CastSessionPolicy.receiverGone(false,false)==CastSessionPolicy.LAUNCH);
+        check(CastSessionPolicy.receiverGone(false,true)==CastSessionPolicy.IGNORE);
+        check(CastSessionPolicy.media("IDLE","CANCELLED",false,true)==CastSessionPolicy.END);
+        check(CastSessionPolicy.media("IDLE","CANCELLED",true,true)==CastSessionPolicy.IGNORE);
+        check(CastSessionPolicy.media("","",false,true)==CastSessionPolicy.END);
+        check(CastSessionPolicy.media("","",false,false)==CastSessionPolicy.IGNORE);
+        check(CastSessionPolicy.media("IDLE","ERROR",true,true)==CastSessionPolicy.ERROR);
+        check(CastSessionPolicy.media("PLAYING","",true,false)==CastSessionPolicy.UPDATE);
         byte[] wire = CastFrame.encode("s", "r", "n", "{}");
         check(Arrays.equals(wire, new byte[]{8,0,18,1,115,26,1,114,34,1,110,40,0,50,2,123,125}));
         CastFrame frame = CastFrame.decode(wire);

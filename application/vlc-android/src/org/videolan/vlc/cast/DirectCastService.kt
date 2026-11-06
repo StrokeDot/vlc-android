@@ -95,8 +95,11 @@ class DirectCastService : Service() {
                         val address = InetAddress.getByName(host)
                         val local = DatagramSocket().use { it.connect(address, port); it.localAddress }
                         require(!local.isAnyLocalAddress) { "No network route to this receiver" }
+                        // Validate URI/encoding before opening a listening socket.
+                        val subtitleText = subtitle?.let { readSubtitle(Uri.parse(it)) }
+                        ctx.ensureActive()
                         val http = CastFileServer(local, prepared.file, prepared.mime)
-                        val captions = subtitle?.let { http.setSubtitles(readSubtitle(Uri.parse(it))) }
+                        val captions = subtitleText?.let { http.setSubtitles(it) }
                         val client = CastConnection(address, port,
                             ready = { loadCurrent() },
                             status = { receiveStatus(it) },
@@ -148,8 +151,10 @@ class DirectCastService : Service() {
         val playing = data.optString("playerState")
         val idle = data.optString("idleReason")
         if (idle == "ERROR") { failure("The receiver cannot play this file. Try Prepare audio for TV or VLC casting."); return }
-        if (idle == "FINISHED") {
-            update(current.copy(active = false, connected = false, message = "Playback finished")); stopSelf(); return
+        if (playing == "IDLE") {
+            update(current.copy(active = false, connected = false, preparing = false,
+                message = if (idle == "FINISHED") "Playback finished" else "Playback stopped on $device"))
+            stopSelf(); return
         }
         val duration = data.optJSONObject("media")?.optDouble("duration", 0.0)?.let { (it * 1000).toLong() } ?: current.duration
         update(current.copy(connected = data.has("mediaSessionId"), playing = playing == "PLAYING",
