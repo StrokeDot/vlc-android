@@ -35,7 +35,8 @@ internal class CastConnection(
     @Volatile private var mediaSession: Long? = null
     private var receiverSession: String? = null
     private var launching = false
-    @Volatile private var loading = false
+    private data class PendingLoad(val url: String, val previousSession: Long, val requestId: Int, val started: Long)
+    @Volatile private var pendingLoad: PendingLoad? = null
 
     fun start() {
         scope.launch {
@@ -62,11 +63,16 @@ internal class CastConnection(
                 launch {
                     while (isActive) {
                         delay(5000)
+                        val waiting = pendingLoad
+                        if (waiting != null && System.nanoTime() - waiting.started > 30_000_000_000L) {
+                            failed("The receiver did not start this video. Try audio preparation or VLC casting.")
+                            close(); return@launch
+                        }
                         send("receiver-0", HEARTBEAT, JSONObject().put("type", "PING"))
                         transport?.let { send(it, MEDIA, JSONObject().put("type", "GET_STATUS")) }
                     }
                 }
-                while (isActive && !closed) {
+                messages@ while (isActive && !closed) {
                     val frame = CastFrame.read(secure.inputStream)
                     val data = JSONObject(frame.payload)
                     when (frame.namespace) {
@@ -75,11 +81,16 @@ internal class CastConnection(
                         MEDIA -> when (data.optString("type")) {
                             "MEDIA_STATUS" -> {
                                 val media = data.optJSONArray("status")?.optJSONObject(0)
+                                val waiting = pendingLoad
+                                if (media?.optString("idleReason") != "ERROR" && waiting != null && media != null &&
+                                    !CastSessionPolicy.belongsToLoad(waiting.url, media.optJSONObject("media")?.optString("contentId") ?: "",
+                                        data.optInt("requestId", -1) == waiting.requestId, waiting.previousSession, media.optLong("mediaSessionId", -1)))
+                                    continue@messages
                                 when (CastSessionPolicy.media(media?.optString("playerState") ?: "",
-                                    media?.optString("idleReason") ?: "", loading, mediaSession != null)) {
+                                    media?.optString("idleReason") ?: "", waiting != null, mediaSession != null)) {
                                     CastSessionPolicy.UPDATE -> if (media != null) {
                                         if (media.has("mediaSessionId")) mediaSession = media.getLong("mediaSessionId")
-                                        loading = false; status(media)
+                                        pendingLoad = null; status(media)
                                     }
                                     CastSessionPolicy.ERROR -> throw IllegalStateException("The receiver cannot play this file. Try Prepare audio for TV or VLC casting.")
                                     CastSessionPolicy.END -> {
@@ -136,7 +147,6 @@ internal class CastConnection(
     }
 
     fun load(url: String, mime: String, title: String, positionMs: Long, subtitleUrl: String?, autoplay: Boolean = true) {
-        loading = true
         val media = JSONObject().put("contentId", url).put("contentType", mime).put("streamType", "BUFFERED")
             .put("metadata", JSONObject().put("metadataType", 0).put("title", title))
         val command = JSONObject().put("type", "LOAD").put("media", media)
@@ -149,7 +159,10 @@ internal class CastConnection(
             media.put("textTrackStyle", JSONObject().put("backgroundColor", "#00000000").put("foregroundColor", "#FFFFFFFF").put("edgeType", "OUTLINE").put("edgeColor", "#000000FF"))
             command.put("activeTrackIds", JSONArray().put(1))
         }
-        transport?.let { send(it, MEDIA, command) }
+        synchronized(writeLock) {
+            pendingLoad = PendingLoad(url, mediaSession ?: -1, request.get() + 1, System.nanoTime())
+            transport?.let { send(it, MEDIA, command) }
+        }
     }
 
     fun command(type: String, positionMs: Long? = null, playing: Boolean = true) {

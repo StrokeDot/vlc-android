@@ -86,7 +86,10 @@ class DirectCastActivity : AppCompatActivity() {
         }
         disconnect = button("Disconnect") { command(DirectCastService.STOP) }
         button("Use VLC casting") {
-            if (current.active) command(DirectCastService.STOP)
+            if (current.active) {
+                Toast.makeText(this, "Disconnect the current cast first.", Toast.LENGTH_SHORT).show()
+                return@button
+            }
             setResult(RESULT_FIRST_USER); finish()
         }
         setContentView(root)

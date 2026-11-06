@@ -16,6 +16,8 @@ public final class CastCoreTest {
     }
     private interface Throwing { void run() throws Exception; }
     public static void main(String[] args) throws Exception {
+        // Exercise browser preflights; the JDK otherwise silently drops Origin.
+        System.setProperty("sun.net.http.allowRestrictedHeaders", "true");
         check(CastSessionPolicy.receiverGone(true,false)==CastSessionPolicy.END);
         check(CastSessionPolicy.receiverGone(false,false)==CastSessionPolicy.LAUNCH);
         check(CastSessionPolicy.receiverGone(false,true)==CastSessionPolicy.IGNORE);
@@ -25,6 +27,10 @@ public final class CastCoreTest {
         check(CastSessionPolicy.media("","",false,false)==CastSessionPolicy.IGNORE);
         check(CastSessionPolicy.media("IDLE","ERROR",true,true)==CastSessionPolicy.ERROR);
         check(CastSessionPolicy.media("PLAYING","",true,false)==CastSessionPolicy.UPDATE);
+        check(!CastSessionPolicy.belongsToLoad("new","other",false,-1,1));
+        check(!CastSessionPolicy.belongsToLoad("same","same",false,5,5));
+        check(CastSessionPolicy.belongsToLoad("same","same",true,5,5));
+        check(CastSessionPolicy.belongsToLoad("new","new",false,5,6));
         byte[] wire = CastFrame.encode("s", "r", "n", "{}");
         check(Arrays.equals(wire, new byte[]{8,0,18,1,115,26,1,114,34,1,110,40,0,50,2,123,125}));
         CastFrame frame = CastFrame.decode(wire);
@@ -69,6 +75,12 @@ public final class CastCoreTest {
             }
             c=request(url,"OPTIONS",null);check(c.getResponseCode()==204);
             check("*".equals(c.getHeaderField("Access-Control-Allow-Origin")));c.disconnect();
+            c=request(url,"OPTIONS",null);c.setRequestProperty("Origin","https://www.gstatic.com");
+            c.setRequestProperty("Access-Control-Request-Private-Network","true");
+            check(c.getResponseCode()==204);
+            check("https://www.gstatic.com".equals(c.getHeaderField("Access-Control-Allow-Origin")));
+            check("true".equals(c.getHeaderField("Access-Control-Allow-Private-Network")));
+            check(c.getHeaderField("Access-Control-Allow-Headers").contains("Accept-Encoding"));c.disconnect();
             c=request(url.replace(server.token(),"wrong"),"GET",null);check(c.getResponseCode()==404);c.disconnect();
             String subs=server.setSubtitles(vtt);
             c=request(subs,"GET",null);check(c.getResponseCode()==200);

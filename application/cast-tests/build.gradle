@@ -16,7 +16,7 @@ android {
         minSdk = 21
         testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
     }
-    sourceSets.main.java.srcDir castSources
+    sourceSets.main.java.srcDir castSources.get().asFile
 }
 tasks.named('preBuild').configure { dependsOn copyCastPreparation }
 
