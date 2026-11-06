@@ -31,6 +31,51 @@ public final class CastCoreTest {
         check(!CastSessionPolicy.belongsToLoad("same","same",false,5,5));
         check(CastSessionPolicy.belongsToLoad("same","same",true,5,5));
         check(CastSessionPolicy.belongsToLoad("new","new",false,5,6));
+        byte[] adts={(byte)0xff,(byte)0xf1,0x4c,(byte)0x80,0x01,0x7f,(byte)0xfc,1,2,3,4};
+        check(CastAacSample.headerLength(java.nio.ByteBuffer.wrap(adts),adts.length)==7);
+        byte[] crc={(byte)0xff,(byte)0xf0,0x4c,(byte)0x80,0x01,(byte)0xbf,(byte)0xfc,0,0,1,2,3,4};
+        check(CastAacSample.headerLength(java.nio.ByteBuffer.wrap(crc),crc.length)==9);
+        check(CastAacSample.headerLength(java.nio.ByteBuffer.wrap(new byte[]{(byte)0xde,2,1}),3)==0);
+        rejects(()->CastAacSample.headerLength(java.nio.ByteBuffer.wrap(adts),5));
+        rejects(()->CastAacSample.headerLength(java.nio.ByteBuffer.wrap(adts),10));
+        byte[] multi=adts.clone();multi[6]|=1;
+        rejects(()->CastAacSample.headerLength(java.nio.ByteBuffer.wrap(multi),multi.length));
+        java.nio.ByteBuffer direct=java.nio.ByteBuffer.allocateDirect(adts.length);direct.put(adts);direct.flip();
+        check(CastAacSample.headerLength(direct,adts.length)==7 && direct.position()==0);
+        CastConversionSignal signal = new CastConversionSignal();
+        signal.inputEnded();
+        check(!signal.await(1, java.util.concurrent.TimeUnit.MILLISECONDS));
+        check(!signal.successful());
+        signal.stopped();
+        check(signal.await(1, java.util.concurrent.TimeUnit.SECONDS) && signal.successful());
+        signal = new CastConversionSignal(); signal.stopped();
+        check(signal.await(1, java.util.concurrent.TimeUnit.SECONDS) && !signal.successful());
+        signal = new CastConversionSignal(); signal.inputEnded(); signal.error();
+        check(signal.await(1, java.util.concurrent.TimeUnit.SECONDS) && !signal.successful());
+        File growing=File.createTempFile("cast-tail", ".ts");
+        java.util.concurrent.CountDownLatch observed=new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.FutureTask<File> producer=new java.util.concurrent.FutureTask<>(()->{
+            if(!observed.await(5,java.util.concurrent.TimeUnit.SECONDS))throw new IOException("Reader never observed completion");
+            Files.write(growing.toPath(),new byte[]{9,8,7});return growing;
+        });
+        Thread append=new Thread(producer,"cast-final-append");append.start();
+        java.util.concurrent.FutureTask<File> boundary=new java.util.concurrent.FutureTask<File>(()->null){
+            @Override public boolean isDone(){observed.countDown();try{producer.get(5,java.util.concurrent.TimeUnit.SECONDS);}catch(Exception e){throw new RuntimeException(e);}return producer.isDone();}
+            @Override public File get()throws InterruptedException,java.util.concurrent.ExecutionException{return producer.get();}
+        };
+        try(CastGrowingFile reader=new CastGrowingFile(growing,boundary,new java.util.concurrent.atomic.AtomicBoolean(),()->{})){
+            byte[] tail=new byte[3];
+            check(reader.readAt(0,tail,0,3)==3&&Arrays.equals(tail,new byte[]{9,8,7}));
+            check(reader.readAt(3,tail,0,3)==-1);
+            check(reader.readAt(0,tail,0,0)==0);
+        }finally{append.join(5000);growing.delete();}
+        File source=File.createTempFile("cast-source", ".ts");Files.write(source.toPath(),new byte[]{1,2,3});
+        java.util.concurrent.CompletableFuture<File> complete=java.util.concurrent.CompletableFuture.completedFuture(source);
+        java.util.concurrent.atomic.AtomicBoolean abort=new java.util.concurrent.atomic.AtomicBoolean();
+        try(CastGrowingFile reader=new CastGrowingFile(source,complete,abort,()->{})){
+            byte[] partial=new byte[5];check(reader.readAt(0,partial,0,5)==3);
+            rejects(()->reader.readAt(-1,partial,0,1));abort.set(true);rejects(()->reader.readAt(0,partial,0,1));
+        }finally{source.delete();}
         byte[] wire = CastFrame.encode("s", "r", "n", "{}");
         check(Arrays.equals(wire, new byte[]{8,0,18,1,115,26,1,114,34,1,110,40,0,50,2,123,125}));
         CastFrame frame = CastFrame.decode(wire);
@@ -103,6 +148,49 @@ public final class CastCoreTest {
             check(new String(c.getInputStream().readAllBytes(),StandardCharsets.UTF_8).equals(vtt));c.disconnect();
             c=request(url,"POST",null);check(c.getResponseCode()==405);c.disconnect();
         } finally { media.delete(); }
+        File sustained = File.createTempFile("cast-delivery", ".mp4");
+        byte[] block = new byte[128 * 1024];
+        new java.util.Random(817203L).nextBytes(block);
+        try {
+            try(OutputStream file=new FileOutputStream(sustained)) {
+                for(int i=0;i<256;i++) { block[0]=(byte)i; block[1]=(byte)(i>>>8); file.write(block); }
+            }
+            final long[] starts={0, 3*1024*1024+17, 9*1024*1024+113};
+            final byte[][] expected=new byte[3][];
+            try(RandomAccessFile file=new RandomAccessFile(sustained,"r")) {
+                for(int i=0;i<starts.length;i++) {
+                    file.seek(starts[i]); java.security.MessageDigest digest=java.security.MessageDigest.getInstance("SHA-256");
+                    long left=8*1024*1024;
+                    while(left>0){int n=file.read(block,0,(int)Math.min(block.length,left));digest.update(block,0,n);left-=n;}
+                    expected[i]=digest.digest();
+                }
+            }
+            check(!Arrays.equals(expected[0],expected[1])&&!Arrays.equals(expected[1],expected[2]));
+            java.util.concurrent.ExecutorService clients=java.util.concurrent.Executors.newFixedThreadPool(3);
+            long started=System.nanoTime();
+            try(CastFileServer server=new CastFileServer(InetAddress.getLoopbackAddress(),sustained,"video/mp4")) {
+                String subs=server.setSubtitles(vtt);
+                for(int wave=0;wave<3;wave++) {
+                    java.util.List<java.util.concurrent.Future<Boolean>> transfers=new java.util.ArrayList<>();
+                    for(int client=0;client<3;client++) {
+                        final int index=client; final long offset=starts[client];
+                        transfers.add(clients.submit(()->{
+                            HttpURLConnection c=request(server.mediaUrl(),"GET","bytes="+offset+"-"+(offset+8*1024*1024-1));
+                            try(InputStream input=c.getInputStream()) {
+                                java.security.MessageDigest sum=java.security.MessageDigest.getInstance("SHA-256");
+                                byte[] buffer=new byte[128*1024];long bytes=0;
+                                for(int n;(n=input.read(buffer))>=0;){sum.update(buffer,0,n);bytes+=n;}
+                                return bytes==8*1024*1024 && Arrays.equals(sum.digest(),expected[index]);
+                            } finally {c.disconnect();}
+                        }));
+                    }
+                    HttpURLConnection c=request(subs,"GET",null);
+                    check(new String(c.getInputStream().readAllBytes(),StandardCharsets.UTF_8).equals(vtt));c.disconnect();
+                    for(java.util.concurrent.Future<Boolean> transfer:transfers) check(transfer.get(15,java.util.concurrent.TimeUnit.SECONDS));
+                }
+                System.out.println("Concurrent delivery: 72 MiB plus captions in "+((System.nanoTime()-started)/1000000)+" ms (loopback only)");
+            } finally {clients.shutdownNow();}
+        } finally {sustained.delete();}
         System.out.println("Direct Cast core: " + checks + " checks passed");
     }
     private static HttpURLConnection request(String url,String method,String range) throws Exception {

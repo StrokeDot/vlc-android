@@ -1,7 +1,7 @@
 name: VLC Plus Android debug APK
 on:
   push:
-    branches: [bluevlc/bootstrap, vlcplus/in-app-updater, vlcplus/direct-cast-subtitles, vlcplus/cast-controls-v7]
+    branches: [bluevlc/bootstrap, vlcplus/in-app-updater, vlcplus/direct-cast-subtitles, vlcplus/cast-controls-v7, vlcplus/cast-performance-v8]
   workflow_dispatch:
 permissions:
   contents: read
@@ -36,8 +36,14 @@ jobs:
           ./buildsystem/compile.sh --init
       - name: Compile debug APK
         shell: bash
-        run: ./gradlew :application:app:assembleDebug :application:cast-tests:assembleDebug :application:cast-tests:assembleDebugAndroidTest -PcastCodecTests=true --no-daemon --stacktrace
+        run: |
+          if [[ "$GITHUB_REF_NAME" == "vlcplus/cast-performance-v8" ]]; then
+            ./gradlew :application:cast-tests:assembleDebug :application:cast-tests:assembleDebugAndroidTest -PcastCodecTests=true --no-daemon --stacktrace
+          else
+            ./gradlew :application:app:assembleDebug :application:cast-tests:assembleDebug :application:cast-tests:assembleDebugAndroidTest -PcastCodecTests=true --no-daemon --stacktrace
+          fi
       - name: Upload VLC Plus APK
+        if: github.ref_name != 'vlcplus/cast-performance-v8'
         uses: actions/upload-artifact@v4
         with:
           name: VLC-Plus-debug-apk
@@ -78,9 +84,10 @@ jobs:
             adb shell wm size 1280x2772
             adb shell wm density 520
             adb shell am instrument -w -r com.strokedot.vlcplus.codectests.test/androidx.test.runner.AndroidJUnitRunner | tee codec-result.txt
-            adb pull /sdcard/Android/data/com.strokedot.vlcplus.codectests/files/cast-controls.png cast-controls.png
-            adb pull /sdcard/Android/data/com.strokedot.vlcplus.codectests/files/cast-dolby-output.mp4 cast-dolby-output.mp4
-            grep -q 'OK (8 tests)' codec-result.txt
+            adb logcat -d -s VLCPlus/CastPerf:I > cast-performance.txt
+            adb logcat -d > cast-device-log.txt
+            adb pull /sdcard/Android/data/com.strokedot.vlcplus.codectests/files/. cast-diagnostics
+            grep -q 'OK (14 tests)' codec-result.txt
 
       - name: Save Android 16 controller screenshot
         if: always()
@@ -88,7 +95,9 @@ jobs:
         with:
           name: VLC-Plus-cast-controls-Android16
           path: |
-            cast-controls.png
-            cast-dolby-output.mp4
+            cast-diagnostics/
+            cast-performance.txt
+            cast-device-log.txt
+            codec-result.txt
           if-no-files-found: warn
           retention-days: 30

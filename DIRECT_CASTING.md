@@ -14,9 +14,13 @@ The existing native path is available through **Use VLC casting**.
 
 If there is no sound, tap **Convert** during playback. The existing picture keeps
 playing while stereo audio is prepared; when ready the receiver switches at the
-current position. Preparation copies the video and produces AAC audio when Android
-can read it, with a VLC/AAC fallback for audio tracks omitted by Android's reader
-(such as Dolby tracks in some Matroska files). It needs time and temporary storage.
+current position. Android-compatible audio is prepared alongside copied video.
+For audio omitted by Android's reader (such as Dolby in some Matroska files),
+VLC encodes AAC while Android copies the original video into the finished MP4.
+These operations overlap, replacing the normal sequential audio-then-video wait.
+The existing two-stage method remains recovery for unsupported streaming sources
+or Android versions below API23. Preparation still needs time and temporary
+storage; exact phone speed must be measured on the real movie.
 Conversion can also be explicitly selected before choosing a receiver.
 
 **Subtitle → Choose from movie folder** reuses VLC's browser in the video's
