@@ -64,4 +64,26 @@ class CastPreparationDeviceTest {
         assertEquals(samples(input, "video/"), samples(output, "video/"))
         assertEquals(samples(input, "audio/").hash, samples(output, "audio/").hash)
     }
+
+    @Test fun dolbyMatroskaKeepsVideoAndProducesRealStereoAudio() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val context = instrumentation.targetContext
+        val folder = File(context.cacheDir, "cast-dolby-${System.nanoTime()}").apply { mkdirs() }
+        try {
+            val input = File(folder, "dolby.mkv")
+            instrumentation.context.assets.open("cast-dolby.mkv").use { source -> input.outputStream().use { source.copyTo(it) } }
+            val output = CastAudioPreparation.prepare(context, Uri.fromFile(input), folder, {}, {}).file
+            assertEquals(samples(input, "video/").hash, samples(output, "video/").hash)
+            val audio = samples(output, "audio/")
+            assertTrue(audio.mime in listOf("audio/mpeg", "audio/mp4a-latm"))
+            assertTrue(audio.count > 10)
+            assertTrue(audio.last - audio.first > 1_700_000)
+            val extractor = MediaExtractor()
+            try {
+                extractor.setDataSource(output.path)
+                val track = (0 until extractor.trackCount).first { extractor.getTrackFormat(it).getString(MediaFormat.KEY_MIME)!!.startsWith("audio/") }
+                assertEquals(2, extractor.getTrackFormat(track).getInteger(MediaFormat.KEY_CHANNEL_COUNT))
+            } finally { extractor.release() }
+        } finally { folder.deleteRecursively() }
+    }
 }

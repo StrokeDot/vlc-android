@@ -24,7 +24,10 @@ import java.util.UUID
 internal data class DirectCastState(
     val active: Boolean = false, val connected: Boolean = false, val preparing: Boolean = false,
     val message: String = "Choose your TV or Chromecast.", val playing: Boolean = false,
-    val position: Long = 0, val duration: Long = 0, val subtitle: Boolean = false
+    val position: Long = 0, val duration: Long = 0, val subtitle: Boolean = false,
+    val title: String = "", val device: String = "", val mediaUri: String = "",
+    val volume: Double = 1.0, val positionUpdatedAt: Long = SystemClock.elapsedRealtime(),
+    val error: String? = null
 )
 
 /** Owns local file serving while the controller is closed or the screen is off. */
@@ -34,12 +37,16 @@ class DirectCastService : Service() {
     private var destroyed = false
     private var job: Job? = null
     private var directory: File? = null
+    private var conversionJob: Job? = null
+    private val retiredServers = mutableListOf<CastFileServer>()
     private var server: CastFileServer? = null
     private var connection: CastConnection? = null
     private var wake: PowerManager.WakeLock? = null
     private var wifi: WifiManager.WifiLock? = null
     @Volatile private var current = DirectCastState()
     @Volatile private var subtitleUrl: String? = null
+    @Volatile private var subtitleText: String? = null
+    private var localAddress: InetAddress? = null
     private var mediaUrl = ""
     private var mediaMime = ""
     private var title = ""
@@ -73,7 +80,8 @@ class DirectCastService : Service() {
                 device = intent.getStringExtra("device") ?: "TV"
                 title = intent.getStringExtra("title") ?: "Video"
                 update(DirectCastState(active = true, preparing = true, message = "Preparing to cast…",
-                    position = intent.getLongExtra("position", 0), duration = intent.getLongExtra("duration", 0)))
+                    position = intent.getLongExtra("position", 0), duration = intent.getLongExtra("duration", 0),
+                    title = title, device = device, mediaUri = intent.getStringExtra("uri") ?: ""))
                 val n = notification()
                 if (Build.VERSION.SDK_INT >= 29) startForeground(NOTIFICATION, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
                 else startForeground(NOTIFICATION, n)
@@ -87,34 +95,39 @@ class DirectCastService : Service() {
                     val ctx = currentCoroutineContext()
                     try {
                         acquireLocks()
+                        ctx.ensureActive()
                         val folder = File(cacheDir, "direct-cast-${UUID.randomUUID()}").apply { check(mkdirs()) { "Temporary storage is unavailable" } }
                         directory = folder
-                        val prepared = CastPreparation.prepare(this@DirectCastService, Uri.parse(uri), folder, convert,
-                            { ctx.ensureActive() }, { message -> update(current.copy(message = message)) })
+                        val original = if (!convert) CastInput.open(this@DirectCastService, Uri.parse(uri)) else null
+                        val prepared = if (convert) CastAudioPreparation.prepare(this@DirectCastService, Uri.parse(uri), folder,
+                            { ctx.ensureActive() }, { message -> update(current.copy(message = message)) }) else null
                         ctx.ensureActive()
                         val address = InetAddress.getByName(host)
                         val local = DatagramSocket().use { it.connect(address, port); it.localAddress }
+                        localAddress = local
                         require(!local.isAnyLocalAddress) { "No network route to this receiver" }
                         // Validate URI/encoding before opening a listening socket.
-                        val subtitleText = subtitle?.let { readSubtitle(Uri.parse(it)) }
+                        subtitleText = subtitle?.let { readSubtitle(Uri.parse(it)) }
                         ctx.ensureActive()
-                        val http = CastFileServer(local, prepared.file, prepared.mime)
+                        val source = original?.source ?: CastFileServer.FileSource(requireNotNull(prepared).file)
+                        val mime = original?.mime ?: requireNotNull(prepared).mime
+                        val http = CastFileServer(local, source, mime)
                         val captions = subtitleText?.let { http.setSubtitles(it) }
                         val client = CastConnection(address, port,
                             ready = { loadCurrent() },
                             status = { receiveStatus(it) },
-                            failed = { failure(it) })
+                            failed = { failure(it) },
+                            volumeChanged = { update(current.copy(volume = it)) })
                         synchronized(resources) {
                             if (destroyed || !ctx.isActive) { http.close(); client.close(); return@launch }
                             server = http; connection = client
-                            mediaUrl = http.mediaUrl(); mediaMime = prepared.mime; subtitleUrl = captions
+                            mediaUrl = http.mediaUrl(); mediaMime = mime; subtitleUrl = captions
                             update(current.copy(preparing = false, message = "Connecting to $device…", subtitle = captions != null))
                             client.start()
                         }
                     } catch (_: CancellationException) {
                         // Destruction owns state and resource cleanup.
                     } catch (e: Exception) { failure(e.message ?: "Could not prepare casting") }
-                    finally { if (destroyed || !ctx.isActive) directory?.deleteRecursively() }
                 }
             }
             STOP -> {
@@ -127,13 +140,16 @@ class DirectCastService : Service() {
             }
             PLAY, PAUSE -> remote { it.command(if (intent.action == PLAY) "PLAY" else "PAUSE") }
             SEEK -> remote { it.command("SEEK", intent.getLongExtra("position", 0).coerceIn(0, current.duration.coerceAtLeast(0)), current.playing) }
+            VOLUME -> remote { it.setVolume(intent.getDoubleExtra("volume", current.volume)) }
+            CONVERT -> prepareAudioWhileCasting()
             SUBTITLE -> if (current.connected && !current.preparing) scope.launch {
                 try {
                     val uri = intent.getStringExtra("subtitle")
-                    subtitleUrl = if (uri == null) null else server?.setSubtitles(readSubtitle(Uri.parse(uri)))
-                    update(current.copy(subtitle = subtitleUrl != null))
+                    subtitleText = if (uri == null) null else readSubtitle(Uri.parse(uri))
+                    subtitleUrl = subtitleText?.let { server?.setSubtitles(it) }
+                    update(current.copy(subtitle = subtitleUrl != null, error = null))
                     loadCurrent()
-                } catch (e: Exception) { update(current.copy(message = e.message ?: "Could not load subtitles")) }
+                } catch (e: Exception) { val message = e.message ?: "Could not load subtitles"; update(current.copy(message = message, error = message)) }
             }
         }
         return START_NOT_STICKY
@@ -147,20 +163,56 @@ class DirectCastService : Service() {
         connection?.load(mediaUrl, mediaMime, title, current.position, subtitleUrl, !current.connected || current.playing)
     }
 
+    private fun prepareAudioWhileCasting() {
+        if (!current.connected || current.preparing || conversionJob?.isActive == true) return
+        update(current.copy(preparing = true, message = "Converting audio for TV…", error = null))
+        conversionJob = scope.launch {
+            val ctx = currentCoroutineContext()
+            var candidate: CastFileServer? = null
+            try {
+                val root = requireNotNull(directory)
+                val folder = File(root, "audio-${UUID.randomUUID()}").apply { check(mkdirs()) }
+                val prepared = CastAudioPreparation.prepare(this@DirectCastService, Uri.parse(current.mediaUri), folder,
+                    { ctx.ensureActive() }, { update(current.copy(message = it)) })
+                ctx.ensureActive()
+                val http = CastFileServer(requireNotNull(localAddress), prepared.file, prepared.mime)
+                candidate = http
+                val captions = subtitleText?.let { http.setSubtitles(it) }
+                synchronized(resources) {
+                    if (destroyed || !ctx.isActive) return@launch
+                    server?.let { retiredServers.add(it) }; server = http; candidate = null
+                    mediaUrl = http.mediaUrl(); mediaMime = prepared.mime; subtitleUrl = captions
+                    val now = SystemClock.elapsedRealtime()
+                    val position = current.position + if (current.playing) now - current.positionUpdatedAt else 0
+                    update(current.copy(preparing = false, message = "Switching to compatible audio…", position = position, positionUpdatedAt = now))
+                    loadCurrent()
+                }
+            } catch (_: CancellationException) { }
+            catch (e: Exception) {
+                val message = e.message ?: "Audio conversion failed"
+                update(current.copy(preparing = false, message = message, error = message))
+            } finally { candidate?.close() }
+        }
+    }
+
     private fun receiveStatus(data: JSONObject) {
         val playing = data.optString("playerState")
         val idle = data.optString("idleReason")
-        if (idle == "ERROR") { failure("The receiver cannot play this file. Try Prepare audio for TV or VLC casting."); return }
+        if (idle == "ERROR") { failure("The receiver cannot play this file. Tap Convert to prepare compatible audio, or use VLC casting."); return }
         if (playing == "IDLE") {
             update(current.copy(active = false, connected = false, preparing = false,
                 message = if (idle == "FINISHED") "Playback finished" else "Playback stopped on $device"))
             stopSelf(); return
         }
         val duration = data.optJSONObject("media")?.optDouble("duration", 0.0)?.let { (it * 1000).toLong() } ?: current.duration
+        if (data.optJSONObject("media")?.optString("contentId") == mediaUrl) synchronized(resources) {
+            retiredServers.forEach { it.close() }; retiredServers.clear()
+        }
         update(current.copy(connected = data.has("mediaSessionId"), playing = playing == "PLAYING",
             position = (data.optDouble("currentTime", current.position / 1000.0) * 1000).toLong(),
+            positionUpdatedAt = SystemClock.elapsedRealtime(),
             duration = if (duration > 0) duration else current.duration,
-            message = when (playing) { "PLAYING" -> "Playing on $device"; "PAUSED" -> "Paused on $device"; "BUFFERING" -> "Buffering on $device…"; else -> current.message }))
+            message = if (current.preparing) current.message else when (playing) { "PLAYING" -> "Playing on $device"; "PAUSED" -> "Paused on $device"; "BUFFERING" -> "Buffering on $device…"; else -> current.message }))
     }
 
     private fun readSubtitle(uri: Uri): String {
@@ -189,7 +241,7 @@ class DirectCastService : Service() {
 
     private fun failure(message: String) {
         Log.w("VLCPlus/Cast", message)
-        update(current.copy(active = false, connected = false, preparing = false, message = message))
+        update(current.copy(active = false, connected = false, preparing = false, message = message, error = message))
         stopSelf()
     }
 
@@ -197,11 +249,11 @@ class DirectCastService : Service() {
         synchronized(resources) {
             destroyed = true
             connection?.close(); server?.close()
+            retiredServers.forEach { it.close() }; retiredServers.clear()
             if (wake?.isHeld == true) wake?.release()
             if (wifi?.isHeld == true) wifi?.release()
         }
-        val folder = directory
-        job?.invokeOnCompletion { folder?.deleteRecursively() }
+        scope.coroutineContext[Job]?.invokeOnCompletion { directory?.deleteRecursively() }
         scope.cancel()
         if (current.active) state.postValue(current.copy(active = false, connected = false, preparing = false, message = "Disconnected"))
         if (Build.VERSION.SDK_INT >= 24) stopForeground(STOP_FOREGROUND_REMOVE) else @Suppress("DEPRECATION") stopForeground(true)
@@ -216,6 +268,8 @@ class DirectCastService : Service() {
         const val PAUSE = "vlcplus.cast.PAUSE"
         const val SEEK = "vlcplus.cast.SEEK"
         const val SUBTITLE = "vlcplus.cast.SUBTITLE"
+        const val CONVERT = "vlcplus.cast.CONVERT"
+        const val VOLUME = "vlcplus.cast.VOLUME"
         private const val CHANNEL = "vlcplus_direct_cast"
         private const val NOTIFICATION = 7319
     }

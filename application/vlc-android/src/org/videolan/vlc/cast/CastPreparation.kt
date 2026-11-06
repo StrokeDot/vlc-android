@@ -13,6 +13,7 @@ import java.nio.ByteOrder
 @TargetApi(21)
 internal object CastPreparation {
     data class Prepared(val file: File, val mime: String)
+    class AudioUnsupported(val input: File, cause: Throwable? = null) : Exception("Android could not read or convert this audio", cause)
 
     fun prepare(context: Context, uri: Uri, directory: File, convertAudio: Boolean,
                 check: () -> Unit, progress: (String) -> Unit): Prepared {
@@ -48,12 +49,15 @@ internal object CastPreparation {
             val video = (0 until probe.trackCount).firstOrNull { probe.getTrackFormat(it).getString(MediaFormat.KEY_MIME)?.startsWith("video/") == true }
                 ?: error("No video track found")
             val audio = (0 until probe.trackCount).firstOrNull { probe.getTrackFormat(it).getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true }
+            if (convertAudio && audio == null) throw AudioUnsupported(input)
             val videoMime = probe.getTrackFormat(video).getString(MediaFormat.KEY_MIME)
             require(videoMime in listOf("video/avc", "video/hevc", "video/mp4v-es")) { "This video format needs VLC casting" }
             val audioMime = audio?.let { probe.getTrackFormat(it).getString(MediaFormat.KEY_MIME) }
             if (audio != null && (convertAudio || audioMime != "audio/mp4a-latm")) {
                 progress("Preparing audio for TV… 0%")
-                convert(input, output, video, audio, rotation, check, progress)
+                try { convert(input, output, video, audio, rotation, check, progress) }
+                catch (e: java.util.concurrent.CancellationException) { throw e }
+                catch (e: Exception) { throw AudioUnsupported(input, e) }
             } else {
                 progress("Preparing video for TV… 0%")
                 remux(probe, output, video, audio, rotation, check, progress)

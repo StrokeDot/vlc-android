@@ -52,6 +52,21 @@ public final class CastCoreTest {
         rejects(() -> CastSubtitles.toWebVtt("not a subtitle"));
         rejects(() -> CastSubtitles.toWebVtt("1\n00:00:03,000 --> 00:00:01,000\nbackwards"));
 
+        final int[] opens={0};
+        CastFileServer.Source large=new CastFileServer.Source() {
+            public long length(){return 5L*1024*1024*1024;}
+            public InputStream open(long offset){opens[0]++;return new ByteArrayInputStream(new byte[]{42,43,44});}
+        };
+        try(CastFileServer server=new CastFileServer(InetAddress.getLoopbackAddress(),large,"video/x-matroska")) {
+            check(opens[0]==0);
+            HttpURLConnection c=request(server.mediaUrl(),"HEAD",null);
+            check(c.getResponseCode()==200&&c.getContentLengthLong()==large.length());
+            check(opens[0]==0);c.disconnect();
+            c=request(server.mediaUrl(),"GET","bytes=1024-1026");
+            check(c.getResponseCode()==206&&Arrays.equals(c.getInputStream().readAllBytes(),new byte[]{42,43,44}));
+            check(opens[0]==1);c.disconnect();
+        }
+
         File media = File.createTempFile("cast-core", ".mp4");
         byte[] data = new byte[1024];
         for (int i=0;i<data.length;i++) data[i]=(byte)i;

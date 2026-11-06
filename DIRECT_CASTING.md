@@ -5,16 +5,24 @@ file if desired, then choose the TV or Chromecast. The controller offers
 pause/resume, a seek slider, and 15-second jumps. Casting continues through a
 foreground service when the control screen is closed or the phone screen is off.
 
-The new path serves compatible MP4/WebM files directly over the local network.
+The default path attempts original local files directly, including Matroska,
+without rewriting an entire movie first. Seekable content URIs are served through
+their descriptors without a bulk copy. Receiver compatibility is still determined
+by actual playback; unsupported originals offer explicit conversion.
 External subtitles are delivered as Cast text tracks, not burned into the picture.
 The existing native path is available through **Use VLC casting**.
 
-If there is no sound, disconnect, select **Prepare audio for TV**, and choose
-the receiver again. Preparation copies the original video and produces AAC audio
-in a finished MP4. This takes time and temporary free storage before playback;
-the resulting file supports range requests and seeking. Matroska files are also
-prepared into MP4 automatically. Audio conversion depends on available Android
-decoders; unsupported video codecs or audio layouts need the native fallback.
+If there is no sound, tap **Convert** during playback. The existing picture keeps
+playing while stereo audio is prepared; when ready the receiver switches at the
+current position. Preparation copies the video and produces AAC audio when Android
+can read it, with a VLC/MP3 fallback for audio tracks omitted by Android's reader
+(such as Dolby tracks in some Matroska files). It needs time and temporary storage.
+Conversion can also be explicitly selected before choosing a receiver.
+
+**Subtitle → Choose from movie folder** reuses VLC's browser in the video's
+directory. **Choose using Files** opens the system picker, with a folder hint
+when available. File selection/read errors are visible. Conversion and subtitle
+controls remain usable after playback starts; volume controls address the receiver.
 
 Limits: local files only; external SRT/WebVTT only; embedded, ASS and bitmap
 subtitles are not extracted by this path. Standard mono/stereo/5.1/7.1 PCM layouts
@@ -27,11 +35,12 @@ claiming that it matches XPlayer or fixes the original VLC slowdown.
 termination policy, actual HTTP range/HEAD/CORS/authorization behavior and
 subtitle conversion without Android.
 
-The opt-in `-PcastCodecTests=true` module compiles the exact production
-`CastPreparation.kt` source into a tiny isolated Android test app. CI runs two
-fixture tests on an API 31 emulator: forced AAC preparation preserves video
-samples/timestamps, and MKV remuxing preserves compatible audio/video payloads.
-Fixtures are synthetic two-second test pattern and sine-wave clips.
+The opt-in `-PcastCodecTests=true` module compiles the production preparation,
+input and controller sources into an isolated Android test app. CI checks direct
+file/content-URI access, audio/video sample preservation, a Dolby-in-MKV fallback,
+and active subtitle/conversion controls. Android 16 renders the actual controller
+at the phone's display dimensions and saves a screenshot for visual inspection.
+Fixtures are synthetic two-second test patterns and sine-wave clips.
 
 Device acceptance remains: discover both receivers; show captions on the TV;
 play smoothly; seek ±15 seconds; repeat after audio preparation; continue with

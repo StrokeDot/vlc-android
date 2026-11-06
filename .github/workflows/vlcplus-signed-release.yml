@@ -107,14 +107,28 @@ jobs:
       - name: Verify audio preparation preserves video and seeking timestamps
         uses: reactivecircus/android-emulator-runner@v2
         with:
-          api-level: 31
+          api-level: 36
+          target: google_apis
+          profile: pixel_6
           arch: x86_64
           disable-animations: true
           script: |
             adb install -r codec-apks/debug/cast-tests-debug.apk
             adb install -r codec-apks/androidTest/debug/cast-tests-debug-androidTest.apk
+            adb shell wm size 1280x2772
+            adb shell wm density 520
             adb shell am instrument -w -r com.strokedot.vlcplus.codectests.test/androidx.test.runner.AndroidJUnitRunner | tee codec-result.txt
-            grep -q 'OK (2 tests)' codec-result.txt
+            adb pull /sdcard/Android/data/com.strokedot.vlcplus.codectests/files/cast-controls.png cast-controls.png
+            grep -q 'OK (6 tests)' codec-result.txt
+
+      - name: Save Android 16 controller screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: VLC-Plus-cast-controls-Android16
+          path: cast-controls.png
+          if-no-files-found: warn
+          retention-days: 30
 
   publish:
     needs: [build-signed, codec-fixtures]
