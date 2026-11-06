@@ -268,6 +268,8 @@ class CastPreparationDeviceTest {
             assertTrue(CastVideoValidation.matches(input, old, {}))
             assertTrue(CastVideoValidation.matches(input, output, {}))
             assertTrue(decoded(output, "audio/").peak > 256)
+            val completeAudio = samples(output, "audio/")
+            assertTrue("Two-minute audio must be complete", completeAudio.count > 5500 && completeAudio.last - completeAudio.first > 119_000_000L)
             val seeker = MediaExtractor()
             try {
                 seeker.setDataSource(output.path)

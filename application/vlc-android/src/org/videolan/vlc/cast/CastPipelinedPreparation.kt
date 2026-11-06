@@ -8,8 +8,6 @@ import android.media.MediaExtractor
 import android.os.SystemClock
 import android.util.Log
 import java.io.File
-import java.io.IOException
-import java.io.RandomAccessFile
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
@@ -59,29 +57,10 @@ internal object CastPipelinedPreparation {
     /** Unknown-length TS source: only completed encoding may report EOF to the extractor. */
     private class GrowingSource(file: File, private val writer: Future<File>,
                                 private val aborted: AtomicBoolean, private val check: () -> Unit) : MediaDataSource() {
-        private val input = RandomAccessFile(file, "r")
-        private val lock = Any()
-        private var closed = false
+        private val reader = CastGrowingFile(file, writer, aborted, Runnable { check() })
         override fun getSize() = -1L
-        override fun readAt(position: Long, buffer: ByteArray, offset: Int, size: Int): Int {
-            if (size == 0) return 0
-            require(position >= 0)
-            while (true) {
-                try { check() } catch (e: Exception) { throw IOException("Preparation interrupted", e) }
-                if (aborted.get()) throw IOException("Preparation stopped")
-                synchronized(lock) {
-                    if (closed) throw IOException("Audio stream closed")
-                    val available = input.length() - position
-                    if (available >= size || writer.isDone) {
-                        if (writer.isDone) try { writer.get() } catch (e: Exception) { throw IOException("Audio preparation failed", e) }
-                        if (available <= 0) return -1
-                        input.seek(position)
-                        return input.read(buffer, offset, minOf(size.toLong(), available).toInt())
-                    }
-                }
-                Thread.sleep(5)
-            }
-        }
-        override fun close() = synchronized(lock) { if (!closed) { closed = true; input.close() } }
+        override fun readAt(position: Long, buffer: ByteArray, offset: Int, size: Int) = reader.readAt(position, buffer, offset, size)
+        override fun close() = reader.close()
+
     }
 }
