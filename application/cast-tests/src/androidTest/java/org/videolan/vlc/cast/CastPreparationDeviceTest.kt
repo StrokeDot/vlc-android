@@ -125,7 +125,9 @@ class CastPreparationDeviceTest {
             instrumentation.context.assets.open("cast-dolby.mkv").use { source -> input.outputStream().use { source.copyTo(it) } }
             val output = CastAudioPreparation.prepare(context, Uri.fromFile(input), folder, {}, {}).file
             output.copyTo(File(context.getExternalFilesDir(null), "cast-dolby-output.mp4"), overwrite = true)
-            assertEquals(samples(input, "video/"), samples(output, "video/"))
+            assertEquals(decoded(input, "video/"), decoded(output, "video/"))
+            assertTrue(CastVideoValidation.matches(input, output, {}))
+            assertEquals("Expected one-pass output", "native-prepared.mp4", output.name)
             val audio = samples(output, "audio/")
             assertEquals("audio/mp4a-latm", audio.mime)
             assertTrue("Converted audio must contain an audible signal", decoded(output, "audio/").peak > 256)
@@ -139,4 +141,22 @@ class CastPreparationDeviceTest {
             } finally { extractor.release() }
         } finally { folder.deleteRecursively() }
     }
+    private fun singlePass(name: String) {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val context = instrumentation.targetContext
+        val folder = File(context.cacheDir, "single-pass-${System.nanoTime()}").apply { mkdirs() }
+        try {
+            val input = File(folder, name)
+            instrumentation.context.assets.open(name).use { source -> input.outputStream().use { source.copyTo(it) } }
+            val output = File(folder, "output.mp4")
+            CastNativePreparation.convert(context, input, output, true, {}, {})
+            assertTrue(CastVideoValidation.matches(input, output, {}))
+            assertEquals(decoded(input, "video/"), decoded(output, "video/"))
+            assertTrue(decoded(output, "audio/").peak > 256)
+            assertEquals(2, folder.listFiles()!!.size)
+        } finally { folder.deleteRecursively() }
+    }
+    @Test fun nativeSinglePassPreservesBFrames() = singlePass("cast-bframes.mkv")
+    @Test fun nativeSinglePassPreservesHevc() = singlePass("cast-hevc.mkv")
+
 }

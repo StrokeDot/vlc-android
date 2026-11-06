@@ -31,6 +31,16 @@ public final class CastCoreTest {
         check(!CastSessionPolicy.belongsToLoad("same","same",false,5,5));
         check(CastSessionPolicy.belongsToLoad("same","same",true,5,5));
         check(CastSessionPolicy.belongsToLoad("new","new",false,5,6));
+        CastConversionSignal signal = new CastConversionSignal();
+        signal.inputEnded();
+        check(!signal.await(1, java.util.concurrent.TimeUnit.MILLISECONDS));
+        check(!signal.successful());
+        signal.stopped();
+        check(signal.await(1, java.util.concurrent.TimeUnit.SECONDS) && signal.successful());
+        signal = new CastConversionSignal(); signal.stopped();
+        check(signal.await(1, java.util.concurrent.TimeUnit.SECONDS) && !signal.successful());
+        signal = new CastConversionSignal(); signal.inputEnded(); signal.error();
+        check(signal.await(1, java.util.concurrent.TimeUnit.SECONDS) && !signal.successful());
         byte[] wire = CastFrame.encode("s", "r", "n", "{}");
         check(Arrays.equals(wire, new byte[]{8,0,18,1,115,26,1,114,34,1,110,40,0,50,2,123,125}));
         CastFrame frame = CastFrame.decode(wire);
