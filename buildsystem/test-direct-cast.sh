@@ -4,6 +4,7 @@ cd "$(dirname "$0")/.."
 OUT="$(mktemp -d)"
 trap 'rm -rf "$OUT"' EXIT
 javac -d "$OUT" application/vlc-android/src/org/videolan/vlc/cast/CastGrowingFile.java \
+  application/vlc-android/src/org/videolan/vlc/cast/CastAacSample.java \
   application/vlc-android/src/org/videolan/vlc/cast/CastConversionSignal.java \
   application/vlc-android/src/org/videolan/vlc/cast/CastFrame.java \
   application/vlc-android/src/org/videolan/vlc/cast/CastSessionPolicy.java \

@@ -119,7 +119,10 @@ internal object CastPreparation {
                 require(source.sampleFlags and MediaExtractor.SAMPLE_FLAG_ENCRYPTED == 0) { "Protected video cannot be prepared" }
                 val size = source.readSampleData(data, 0)
                 require(size >= 0) { "The media file ended before its declared samples" }
-                info.set(0, size, (if (useVideo) video.sampleTime else audioTime).coerceAtLeast(0), source.sampleFlags and MediaExtractor.SAMPLE_FLAG_SYNC)
+                // TS extractors can retain ADTS framing; MP4 requires the raw AAC payload.
+                // Existing M4A audio and every original video sample remain unchanged.
+                val offset = if (normalizeAudio && !useVideo) CastAacSample.headerLength(data, size) else 0
+                info.set(offset, size - offset, (if (useVideo) video.sampleTime else audioTime).coerceAtLeast(0), source.sampleFlags and MediaExtractor.SAMPLE_FLAG_SYNC)
                 mux.writeSampleData(if (useVideo) muxVideo else muxAudio, data, info)
                 val percent = if (duration > 0) (info.presentationTimeUs * 100 / duration).toInt().coerceIn(0, 99) else 0
                 if (percent != reported) { reported = percent; progress("$label… $percent%") }

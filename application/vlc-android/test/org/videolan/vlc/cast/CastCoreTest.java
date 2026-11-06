@@ -31,6 +31,17 @@ public final class CastCoreTest {
         check(!CastSessionPolicy.belongsToLoad("same","same",false,5,5));
         check(CastSessionPolicy.belongsToLoad("same","same",true,5,5));
         check(CastSessionPolicy.belongsToLoad("new","new",false,5,6));
+        byte[] adts={(byte)0xff,(byte)0xf1,0x4c,(byte)0x80,0x01,0x7f,(byte)0xfc,1,2,3,4};
+        check(CastAacSample.headerLength(java.nio.ByteBuffer.wrap(adts),adts.length)==7);
+        byte[] crc={(byte)0xff,(byte)0xf0,0x4c,(byte)0x80,0x01,(byte)0xbf,(byte)0xfc,0,0,1,2,3,4};
+        check(CastAacSample.headerLength(java.nio.ByteBuffer.wrap(crc),crc.length)==9);
+        check(CastAacSample.headerLength(java.nio.ByteBuffer.wrap(new byte[]{(byte)0xde,2,1}),3)==0);
+        rejects(()->CastAacSample.headerLength(java.nio.ByteBuffer.wrap(adts),5));
+        rejects(()->CastAacSample.headerLength(java.nio.ByteBuffer.wrap(adts),10));
+        byte[] multi=adts.clone();multi[6]|=1;
+        rejects(()->CastAacSample.headerLength(java.nio.ByteBuffer.wrap(multi),multi.length));
+        java.nio.ByteBuffer direct=java.nio.ByteBuffer.allocateDirect(adts.length);direct.put(adts);direct.flip();
+        check(CastAacSample.headerLength(direct,adts.length)==7 && direct.position()==0);
         CastConversionSignal signal = new CastConversionSignal();
         signal.inputEnded();
         check(!signal.await(1, java.util.concurrent.TimeUnit.MILLISECONDS));
