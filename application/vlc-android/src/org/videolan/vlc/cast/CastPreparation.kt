@@ -13,6 +13,7 @@ import java.nio.ByteOrder
 @TargetApi(21)
 internal object CastPreparation {
     data class Prepared(val file: File, val mime: String)
+    class AudioUnsupported(val input: File, cause: Throwable? = null) : Exception("Android could not read or convert this audio", cause)
 
     fun prepare(context: Context, uri: Uri, directory: File, convertAudio: Boolean,
                 check: () -> Unit, progress: (String) -> Unit): Prepared {
@@ -48,17 +49,67 @@ internal object CastPreparation {
             val video = (0 until probe.trackCount).firstOrNull { probe.getTrackFormat(it).getString(MediaFormat.KEY_MIME)?.startsWith("video/") == true }
                 ?: error("No video track found")
             val audio = (0 until probe.trackCount).firstOrNull { probe.getTrackFormat(it).getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true }
+            if (convertAudio && audio == null) throw AudioUnsupported(input)
             val videoMime = probe.getTrackFormat(video).getString(MediaFormat.KEY_MIME)
             require(videoMime in listOf("video/avc", "video/hevc", "video/mp4v-es")) { "This video format needs VLC casting" }
             val audioMime = audio?.let { probe.getTrackFormat(it).getString(MediaFormat.KEY_MIME) }
             if (audio != null && (convertAudio || audioMime != "audio/mp4a-latm")) {
                 progress("Preparing audio for TV… 0%")
-                convert(input, output, video, audio, rotation, check, progress)
+                try { convert(input, output, video, audio, rotation, check, progress) }
+                catch (e: java.util.concurrent.CancellationException) { throw e }
+                catch (e: Exception) { throw AudioUnsupported(input, e) }
             } else {
                 progress("Preparing video for TV… 0%")
                 remux(probe, output, video, audio, rotation, check, progress)
             }
         } finally { probe.release() }
+        check()
+        return Prepared(output, "video/mp4")
+    }
+
+    /** Attach native-decoded AAC while preserving all original video samples and timestamps. */
+    fun withAudio(input: File, compatibleAudio: File, directory: File, check: () -> Unit,
+                  progress: (String) -> Unit): Prepared {
+        val video = MediaExtractor(); val audio = MediaExtractor()
+        val output = File(directory, "prepared.mp4")
+        var muxer: MediaMuxer? = null; var started = false
+        try {
+            video.setDataSource(input.path); audio.setDataSource(compatibleAudio.path)
+            val videoTrack = (0 until video.trackCount).firstOrNull { video.getTrackFormat(it).getString(MediaFormat.KEY_MIME)?.startsWith("video/") == true }
+                ?: error("No video track found")
+            val audioTrack = (0 until audio.trackCount).firstOrNull { audio.getTrackFormat(it).getString(MediaFormat.KEY_MIME) == "audio/mp4a-latm" }
+                ?: error("VLC could not produce compatible AAC audio")
+            val videoFormat = video.getTrackFormat(videoTrack)
+            require(videoFormat.getString(MediaFormat.KEY_MIME) in listOf("video/avc", "video/hevc", "video/mp4v-es")) { "This video format needs VLC casting" }
+            val audioFormat = audio.getTrackFormat(audioTrack)
+            val metadata = MediaMetadataRetriever()
+            val rotation = try { metadata.setDataSource(input.path); metadata.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull() ?: 0 }
+                finally { metadata.release() }
+            val mux = MediaMuxer(output.path, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4); muxer = mux
+            mux.setOrientationHint(rotation)
+            val muxVideo = mux.addTrack(videoFormat); val muxAudio = mux.addTrack(audioFormat)
+            video.selectTrack(videoTrack); audio.selectTrack(audioTrack)
+            val data = ByteBuffer.allocateDirect(maxOf(bufferSize(videoFormat), bufferSize(audioFormat)))
+            val info = MediaCodec.BufferInfo()
+            val duration = if (videoFormat.containsKey(MediaFormat.KEY_DURATION)) videoFormat.getLong(MediaFormat.KEY_DURATION) else 0L
+            mux.start(); started = true
+            var reported = -1
+            while (video.sampleTime >= 0 || audio.sampleTime >= 0) {
+                check(); data.clear()
+                val useVideo = video.sampleTime >= 0 && (audio.sampleTime < 0 || video.sampleTime <= audio.sampleTime)
+                val source = if (useVideo) video else audio
+                require(source.sampleFlags and MediaExtractor.SAMPLE_FLAG_ENCRYPTED == 0) { "Protected video cannot be prepared" }
+                val size = source.readSampleData(data, 0)
+                if (size < 0) break
+                info.set(0, size, source.sampleTime.coerceAtLeast(0), source.sampleFlags and MediaExtractor.SAMPLE_FLAG_SYNC)
+                mux.writeSampleData(if (useVideo) muxVideo else muxAudio, data, info)
+                val percent = if (duration > 0) (info.presentationTimeUs * 100 / duration).toInt().coerceIn(0, 99) else 0
+                if (percent != reported) { reported = percent; progress("Preparing video with compatible audio… $percent%") }
+                source.advance()
+            }
+        } finally {
+            try { if (started) muxer?.stop() } finally { muxer?.release(); video.release(); audio.release() }
+        }
         check()
         return Prepared(output, "video/mp4")
     }

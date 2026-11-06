@@ -5,7 +5,9 @@ plugins {
 
 def castSources = layout.buildDirectory.dir('generated/cast-source')
 def copyCastPreparation = tasks.register('copyCastPreparation', Copy) {
-    from '../vlc-android/src/org/videolan/vlc/cast/CastPreparation.kt'
+    from('../vlc-android/src/org/videolan/vlc/cast') {
+        include 'CastPreparation.kt', 'CastAudioPreparation.kt', 'CastInput.kt', 'CastFileServer.java', 'CastControlsView.kt', 'CastMovieLocation.kt', 'CastStateStore.kt'
+    }
     into castSources
 }
 
@@ -21,6 +23,7 @@ android {
 tasks.named('preBuild').configure { dependsOn copyCastPreparation }
 
 dependencies {
+    implementation "org.videolan.android:libvlc-all:$rootProject.ext.libvlcVersion"
     androidTestImplementation 'androidx.test:runner:1.5.2'
     androidTestImplementation 'androidx.test.ext:junit:1.1.5'
     androidTestImplementation 'junit:junit:4.13.2'

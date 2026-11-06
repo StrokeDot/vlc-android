@@ -23,7 +23,8 @@ internal class CastConnection(
     private val port: Int,
     private val ready: () -> Unit,
     private val status: (JSONObject) -> Unit,
-    private val failed: (String) -> Unit
+    private val failed: (String) -> Unit,
+    private val volumeChanged: (Double) -> Unit = {}
 ) : Closeable {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val request = AtomicInteger()
@@ -65,7 +66,7 @@ internal class CastConnection(
                         delay(5000)
                         val waiting = pendingLoad
                         if (waiting != null && System.nanoTime() - waiting.started > 30_000_000_000L) {
-                            failed("The receiver did not start this video. Try audio preparation or VLC casting.")
+                            failed("The receiver did not start this video. Tap Convert or use VLC casting.")
                             close(); return@launch
                         }
                         send("receiver-0", HEARTBEAT, JSONObject().put("type", "PING"))
@@ -92,14 +93,14 @@ internal class CastConnection(
                                         if (media.has("mediaSessionId")) mediaSession = media.getLong("mediaSessionId")
                                         pendingLoad = null; status(media)
                                     }
-                                    CastSessionPolicy.ERROR -> throw IllegalStateException("The receiver cannot play this file. Try Prepare audio for TV or VLC casting.")
+                                    CastSessionPolicy.ERROR -> throw IllegalStateException("The receiver cannot play this file. Tap Convert to prepare compatible audio, or use VLC casting.")
                                     CastSessionPolicy.END -> {
                                         status(media ?: JSONObject().put("playerState", "IDLE").put("idleReason", "CANCELLED"))
                                         close()
                                     }
                                 }
                             }
-                            "LOAD_FAILED", "LOAD_CANCELLED", "INVALID_REQUEST" -> throw IllegalStateException("The receiver could not play this file. Try Prepare audio for TV, or VLC casting.")
+                            "LOAD_FAILED", "LOAD_CANCELLED", "INVALID_REQUEST" -> throw IllegalStateException("The receiver could not play this file. Tap Convert to prepare compatible audio, or use VLC casting.")
                         }
                         CONNECTION -> if (data.optString("type") == "CLOSE") throw IllegalStateException("The receiver closed the casting connection")
                     }
@@ -112,6 +113,9 @@ internal class CastConnection(
 
     private fun receiverStatus(data: JSONObject) {
         if (data.optString("type") == "LAUNCH_ERROR") throw IllegalStateException("The receiver could not start its media player")
+        data.optJSONObject("status")?.optJSONObject("volume")?.let {
+            volumeChanged(if (it.optBoolean("muted", false)) 0.0 else it.optDouble("level", 1.0))
+        }
         val apps = data.optJSONObject("status")?.optJSONArray("applications") ?: JSONArray()
         for (i in 0 until apps.length()) {
             val app = apps.getJSONObject(i)
@@ -172,6 +176,11 @@ internal class CastConnection(
         if (positionMs != null) data.put("currentTime", positionMs.coerceAtLeast(0) / 1000.0)
             .put("resumeState", if (playing) "PLAYBACK_START" else "PLAYBACK_PAUSE")
         transport?.let { send(it, MEDIA, data) }
+    }
+
+    fun setVolume(level: Double) {
+        send("receiver-0", RECEIVER, JSONObject().put("type", "SET_VOLUME")
+            .put("volume", JSONObject().put("level", level.coerceIn(0.0, 1.0)).put("muted", false)))
     }
 
     override fun close() {

@@ -10,15 +10,39 @@ import java.util.concurrent.*;
 /** Seekable, constant-memory local file delivery. Only unguessable registered URLs exist. */
 public final class CastFileServer implements Closeable {
     private final ServerSocket server;
-    private final File file;
+    public interface Source {
+        long length();
+        InputStream open(long offset) throws IOException;
+    }
+    public static final class FileSource implements Source {
+        private final File file;
+        public FileSource(File file) throws IOException {
+            if(!file.isFile()||file.length()==0)throw new IOException("Media file is empty or unavailable");
+            this.file=file;
+        }
+        public long length(){return file.length();}
+        public InputStream open(long offset) throws IOException {
+            final RandomAccessFile input=new RandomAccessFile(file,"r");
+            try{input.seek(offset);}catch(IOException e){input.close();throw e;}
+            return new InputStream(){
+                public int read()throws IOException{return input.read();}
+                public int read(byte[] b,int start,int length)throws IOException{return input.read(b,start,length);}
+                public void close()throws IOException{input.close();}
+            };
+        }
+    }
+    private final Source source;
     private final String mime,secret=UUID.randomUUID().toString();
     private volatile byte[] subtitles=new byte[0];
     private final Set<Socket> sockets=Collections.newSetFromMap(new ConcurrentHashMap<Socket,Boolean>());
     private final ExecutorService workers=new ThreadPoolExecutor(1,4,30,TimeUnit.SECONDS,new SynchronousQueue<Runnable>());
     private volatile boolean closed;
     public CastFileServer(InetAddress address,File file,String mime) throws IOException {
-        if(!file.isFile()||file.length()==0)throw new IOException("Media file is empty or unavailable");
-        this.file=file;this.mime=mime;server=new ServerSocket(0,8,address);
+        this(address,new FileSource(file),mime);
+    }
+    public CastFileServer(InetAddress address,Source source,String mime) throws IOException {
+        if(source.length()<=0)throw new IOException("Media length is unavailable");
+        this.source=source;this.mime=mime;server=new ServerSocket(0,8,address);
         Thread thread=new Thread(()->{
             while(!closed){
                 try{Socket socket=server.accept();socket.setSoTimeout(15000);sockets.add(socket);
@@ -43,7 +67,7 @@ public final class CastFileServer implements Closeable {
             if(!media&&!sub){head(out,404,"Not Found",0,null,null,origin);return;}
             if(request[0].equals("OPTIONS")){head(out,204,"No Content",0,null,null,origin);return;}
             if(!request[0].equals("GET")&&!request[0].equals("HEAD")){head(out,405,"Method Not Allowed",0,null,null,origin);return;}
-            byte[] text=subtitles;long length=media?file.length():text.length,start=0,end=length-1;boolean partial=false;
+            byte[] text=subtitles;long length=media?source.length():text.length,start=0,end=length-1;boolean partial=false;
             String range=headers.get("range");
             if(range!=null){
                 try{
@@ -57,8 +81,8 @@ public final class CastFileServer implements Closeable {
             long count=Math.max(0,end-start+1);
             head(out,partial?206:200,partial?"Partial Content":"OK",count,media?mime:"text/vtt; charset=utf-8",partial?"bytes "+start+"-"+end+"/"+length:null,origin);
             if(request[0].equals("HEAD"))return;
-            if(media){try(RandomAccessFile input=new RandomAccessFile(file,"r")){
-                input.seek(start);byte[] buf=new byte[128*1024];long left=count;
+            if(media){try(InputStream input=source.open(start)){
+                byte[] buf=new byte[128*1024];long left=count;
                 while(left>0&&!closed){int n=input.read(buf,0,(int)Math.min(buf.length,left));if(n<0)break;out.write(buf,0,n);left-=n;}
             }}else if(count>0)out.write(text,(int)start,(int)count);
             out.flush();

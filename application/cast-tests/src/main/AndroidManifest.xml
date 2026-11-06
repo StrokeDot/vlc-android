@@ -1,3 +1,5 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <application android:label="VLC Plus codec tests" />
+    <application android:label="VLC Plus codec tests" android:theme="@android:style/Theme.Material.NoActionBar">
+        <activity android:name="org.videolan.vlc.cast.ControllerPreviewActivity" android:exported="true" />
+    </application>
 </manifest>

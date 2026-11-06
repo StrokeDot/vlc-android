@@ -3,116 +3,165 @@ package org.videolan.vlc.cast
 
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.net.wifi.WifiManager
+import android.os.Build
 import android.os.Bundle
-import android.view.View
-import android.widget.*
+import android.os.SystemClock
+import android.provider.DocumentsContract
+import android.widget.ArrayAdapter
+import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.videolan.medialibrary.MLServiceLocator
 import org.videolan.vlc.PlaybackService
+import org.videolan.vlc.gui.browser.EXTRA_MRL
+import org.videolan.vlc.gui.browser.FilePickerActivity
+import org.videolan.vlc.gui.browser.KEY_MEDIA
+import org.videolan.vlc.util.FileUtils
 import java.util.ArrayDeque
-import java.util.Locale
 
-/** Device chooser and remote controls. The service, not this screen, owns streaming. */
-class DirectCastActivity : AppCompatActivity() {
-    private lateinit var status: TextView
-    private lateinit var devices: LinearLayout
-    private lateinit var pause: Button
-    private lateinit var back: Button
-    private lateinit var forward: Button
-    private lateinit var disconnect: Button
-    private lateinit var subtitles: Button
-    private lateinit var clearSubtitles: Button
-    private lateinit var prepare: CheckBox
-    private lateinit var seek: SeekBar
-    private lateinit var time: TextView
+/** Binds the compact controller to receiver discovery, the file browser and the service. */
+class DirectCastActivity : AppCompatActivity(), CastControlsView.Actions {
+    private lateinit var controls: CastControlsView
     private lateinit var nsd: NsdManager
     private var listener: NsdManager.DiscoveryListener? = null
     private var multicast: WifiManager.MulticastLock? = null
     private var pendingSubtitle: String? = null
-    private var dragging = false
+    private var convertBeforeConnect = false
     private var started = false
     private var resolving = false
     private var discoveryGeneration = 0
+    private var deviceDialog: AlertDialog? = null
+    private var deviceAdapter: ArrayAdapter<String>? = null
+    private var lastError: String? = null
+    private var previousVolume = 1.0
     private val pending = ArrayDeque<NsdServiceInfo>()
     private val receivers = linkedMapOf<String, NsdServiceInfo>()
     private var current = DirectCastState()
+    private val clock = object : Runnable {
+        override fun run() { render(); if (started) controls.postDelayed(this, 1000) }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        CastControlsView.prepareWindow(window)
         pendingSubtitle = savedInstanceState?.getString("subtitle")
+        convertBeforeConnect = savedInstanceState?.getBoolean("convert") ?: false
         nsd = getSystemService(Context.NSD_SERVICE) as NsdManager
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            val padding = (20 * resources.displayMetrics.density).toInt()
-            setPadding(padding, padding, padding, padding)
-        }
-        fun text(value: String, size: Float = 16f) = TextView(this).apply { text = value; textSize = size; root.addView(this) }
-        fun button(value: String, action: () -> Unit) = Button(this).apply { text = value; setOnClickListener { action() }; root.addView(this) }
-        text("Cast to TV", 25f)
-        status = text("Looking for your TV and Chromecast…")
-        prepare = CheckBox(this).apply { text = "Prepare audio for TV"; root.addView(this) }
-        text("Use this if the video has no sound. Preparation keeps the video quality and supports seeking, but needs time and temporary storage.", 13f)
-        devices = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        val scroll = ScrollView(this).apply { addView(devices) }
-        root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
-        time = text("0:00 / 0:00")
-        seek = SeekBar(this).apply { max = 1000; root.addView(this) }
-        seek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onStartTrackingTouch(bar: SeekBar) { dragging = true }
-            override fun onProgressChanged(bar: SeekBar, progress: Int, fromUser: Boolean) = Unit
-            override fun onStopTrackingTouch(bar: SeekBar) {
-                dragging = false
-                command(DirectCastService.SEEK) { putExtra("position", current.duration * bar.progress / 1000) }
-            }
-        })
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        fun control(label: String, action: () -> Unit) = Button(this).apply {
-            text = label; setOnClickListener { action() }; row.addView(this, LinearLayout.LayoutParams(0, -2, 1f))
-        }
-        back = control("−15 s") { jump(-15000) }
-        pause = control("Pause") { command(if (current.playing) DirectCastService.PAUSE else DirectCastService.PLAY) }
-        forward = control("+15 s") { jump(15000) }
-        root.addView(row)
-        subtitles = button("Choose subtitles (.srt / .vtt)") {
-            startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*"), PICK_SUBTITLE)
-        }
-        clearSubtitles = button("Turn subtitles off") {
-            pendingSubtitle = null
-            if (current.connected) command(DirectCastService.SUBTITLE)
-            subtitles.text = "Choose subtitles (.srt / .vtt)"
-        }
-        disconnect = button("Disconnect") { command(DirectCastService.STOP) }
-        button("Use VLC casting") {
-            if (current.active) {
-                Toast.makeText(this, "Disconnect the current cast first.", Toast.LENGTH_SHORT).show()
-                return@button
-            }
-            setResult(RESULT_FIRST_USER); finish()
-        }
-        setContentView(root)
-        DirectCastService.state.observe(this) { state ->
-            current = state
-            status.text = state.message
-            pause.text = if (state.playing) "Pause" else "Play"
-            pause.isEnabled = state.connected
-            back.isEnabled = state.connected && state.duration > 0
-            forward.isEnabled = back.isEnabled
-            seek.isEnabled = back.isEnabled
-            prepare.isEnabled = !state.active
-            disconnect.isEnabled = state.active
-            subtitles.isEnabled = !state.preparing
-            clearSubtitles.isEnabled = !state.preparing && (state.subtitle || pendingSubtitle != null)
-            if (!dragging && state.duration > 0) seek.progress = (state.position * 1000 / state.duration).toInt().coerceIn(0, 1000)
-            time.text = "${format(state.position)} / ${format(state.duration)}"
-            renderReceivers()
+        controls = CastControlsView(this, this)
+        setContentView(controls)
+        controls.requestApplyInsets()
+        DirectCastService.state.observe(this) {
+            current = it; render()
+            if (it.error != null && it.error != lastError) {
+                lastError = it.error
+                AlertDialog.Builder(this).setTitle("Casting").setMessage(it.error).setPositiveButton("OK", null).show()
+            } else if (it.error == null) lastError = null
         }
     }
 
-    private fun jump(offset: Long) = command(DirectCastService.SEEK) {
-        putExtra("position", (current.position + offset).coerceIn(0, current.duration.coerceAtLeast(0)))
+    private fun position(): Long = (current.position + if (current.playing) SystemClock.elapsedRealtime() - current.positionUpdatedAt else 0)
+        .coerceIn(0, current.duration.coerceAtLeast(0))
+
+    private fun render() {
+        controls.render((if (sameMovie()) current.title else "").ifBlank { intent.getStringExtra("title") ?: "Cast to TV" }, current.device,
+            current.message, current.active, current.connected, current.preparing, current.playing,
+            position(), current.duration, current.volume, if (current.connected) current.subtitle else pendingSubtitle != null)
+    }
+
+    override fun back() = finish()
+    override fun stop() = command(DirectCastService.STOP)
+    override fun playPause() = command(if (current.playing) DirectCastService.PAUSE else DirectCastService.PLAY)
+    override fun jump(delta: Long) = seek(position() + delta)
+    override fun seek(position: Long) = command(DirectCastService.SEEK) { putExtra("position", position.coerceIn(0, current.duration.coerceAtLeast(0))) }
+    override fun volume(delta: Double) { if (current.connected) command(DirectCastService.VOLUME) { putExtra("volume", (current.volume + delta).coerceIn(0.0, 1.0)) } }
+    override fun mute() {
+        if (!current.connected) return
+        if (current.volume > 0) { previousVolume = current.volume; command(DirectCastService.VOLUME) { putExtra("volume", 0.0) } }
+        else command(DirectCastService.VOLUME) { putExtra("volume", previousVolume) }
+    }
+
+    override fun devices() {
+        if (current.active) {
+            AlertDialog.Builder(this).setTitle(current.device.ifBlank { "Casting" })
+                .setMessage("Stop the current cast to choose another device.")
+                .setPositiveButton("Stop casting") { _, _ -> stop() }.setNegativeButton("Close", null).show()
+            return
+        }
+        if (deviceDialog?.isShowing == true) return
+        deviceAdapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, mutableListOf<String>())
+        refreshDeviceList()
+        deviceDialog = AlertDialog.Builder(this).setTitle("Cast to")
+            .setAdapter(deviceAdapter) { _, position -> receivers.values.toList().getOrNull(position)?.let { connect(it) } }
+            .setNegativeButton("Cancel", null).create().apply { show() }
+        if (receivers.isEmpty()) Toast.makeText(this, "Searching for your TV and Chromecast…", Toast.LENGTH_SHORT).show()
+    }
+
+    override fun subtitles() {
+        if (current.preparing) return
+        AlertDialog.Builder(this).setTitle("Subtitles")
+            .setItems(arrayOf("Choose from movie folder", "Choose using Files", "Off")) { _, index ->
+                when (index) {
+                    0 -> openMovieFolder()
+                    1 -> openSystemPicker()
+                    else -> { pendingSubtitle = null; if (current.connected) command(DirectCastService.SUBTITLE); render() }
+                }
+            }.show()
+    }
+
+    private fun sameMovie() = movieUri()?.toString() == current.mediaUri
+
+    private fun movieUri(): Uri? = (intent.getStringExtra("uri") ?: current.mediaUri.takeIf { it.isNotBlank() })?.let { Uri.parse(it) }
+
+    private fun openMovieFolder() {
+        lifecycleScope.launch {
+            val uri = movieUri()
+            val resolved = withContext(Dispatchers.IO) {
+                uri?.let { CastMovieLocation.localFile(this@DirectCastActivity, it) }
+            }
+            val parent = resolved?.takeIf { it.scheme == "file" || it.scheme == null }?.let { FileUtils.getParent(it.toString()) }
+            if (parent == null) { openSystemPicker(); return@launch }
+            val directory = MLServiceLocator.getAbstractMediaWrapper(Uri.parse(parent))
+            startActivityForResult(Intent(this@DirectCastActivity, FilePickerActivity::class.java).putExtra(KEY_MEDIA, directory), PICK_LOCAL_SUBTITLE)
+        }
+    }
+
+    private fun openSystemPicker() {
+        val picker = Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*")
+        if (Build.VERSION.SDK_INT >= 26) movieUri()?.let { CastMovieLocation.initialFolder(it) }?.let {
+            picker.putExtra(DocumentsContract.EXTRA_INITIAL_URI, it)
+        }
+        startActivityForResult(picker, PICK_SYSTEM_SUBTITLE)
+    }
+
+    override fun convert() {
+        if (current.preparing) return
+        AlertDialog.Builder(this).setTitle("Convert audio for TV")
+            .setMessage(if (current.connected) "Prepare compatible stereo audio while the current picture keeps playing. When ready, playback switches at your current position. This needs time and temporary storage."
+                else "Prepare compatible audio and a seekable video file before playback. Use this if the receiver cannot play the original or has no sound. This can take several minutes.")
+            .setPositiveButton("Convert") { _, _ ->
+                if (current.connected) command(DirectCastService.CONVERT)
+                else { convertBeforeConnect = true; devices() }
+            }.setNegativeButton("Cancel", null).show()
+    }
+
+    override fun help() {
+        AlertDialog.Builder(this).setTitle("Casting help")
+            .setMessage("Fast cast sends the original file first.\n\nNo sound? Tap Convert to prepare stereo audio.\n\nSubtitle files: SRT or WebVTT. Choose from movie folder opens beside your video.\n\nStop cancels casting and preparation. Use VLC casting is the original fallback.")
+            .setPositiveButton("OK", null).show()
+    }
+
+    override fun legacy() {
+        if (current.active) { Toast.makeText(this, "Stop the current cast first.", Toast.LENGTH_SHORT).show(); return }
+        setResult(RESULT_FIRST_USER); finish()
     }
 
     private fun command(action: String, extras: Intent.() -> Unit = {}) {
@@ -122,88 +171,78 @@ class DirectCastActivity : AppCompatActivity() {
 
     private fun connect(info: NsdServiceInfo) {
         if (current.active) return
-        val uri = intent.getStringExtra("uri")
-        if (uri == null) { status.text = "Open a local video in VLC Plus, then tap its Cast button."; return }
+        val uri = movieUri()?.toString()
+        if (uri == null) { Toast.makeText(this, "Open a local video, then tap Cast.", Toast.LENGTH_LONG).show(); return }
         val host = info.host?.hostAddress ?: return
-        PlaybackService.serviceFlow.value?.pause()
-        PlaybackService.renderer.value = null
+        PlaybackService.serviceFlow.value?.pause(); PlaybackService.renderer.value = null
         val service = Intent(this, DirectCastService::class.java).setAction(DirectCastService.CONNECT)
             .putExtra("uri", uri).putExtra("host", host).putExtra("port", info.port)
-            .putExtra("device", name(info)).putExtra("title", intent.getStringExtra("title"))
-            .putExtra("position", intent.getLongExtra("position", 0)).putExtra("duration", intent.getLongExtra("duration", 0))
-            .putExtra("convert", prepare.isChecked).putExtra("subtitle", pendingSubtitle)
+            .putExtra("device", name(info)).putExtra("title", intent.getStringExtra("title") ?: current.title)
+            .putExtra("position", if (sameMovie() && current.duration > 0) position() else intent.getLongExtra("position", 0))
+            .putExtra("duration", current.duration.takeIf { sameMovie() && it > 0 } ?: intent.getLongExtra("duration", 0))
+            .putExtra("convert", convertBeforeConnect).putExtra("subtitle", pendingSubtitle)
+        convertBeforeConnect = false
         ContextCompat.startForegroundService(this, service)
     }
 
-    private fun name(info: NsdServiceInfo): String =
-        info.attributes["fn"]?.let { String(it, Charsets.UTF_8) } ?: info.serviceName
-
-    private fun renderReceivers() {
-        if (!::devices.isInitialized) return
-        devices.removeAllViews()
-        receivers.values.forEach { info ->
-            devices.addView(Button(this).apply { text = name(info); isEnabled = !current.active; setOnClickListener { connect(info) } })
-        }
-    }
+    private fun name(info: NsdServiceInfo): String = info.attributes["fn"]?.let { String(it, Charsets.UTF_8) } ?: info.serviceName
+    private fun refreshDeviceList() { deviceAdapter?.apply { clear(); addAll(receivers.values.map { name(it) }); notifyDataSetChanged() } }
 
     override fun onStart() {
         super.onStart(); started = true; discoveryGeneration++
+        controls.post(clock)
         val generation = discoveryGeneration
         multicast = (applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager)
             .createMulticastLock("VLCPlus:discovery").apply { setReferenceCounted(false); acquire() }
         val discovery = object : NsdManager.DiscoveryListener {
             override fun onDiscoveryStarted(type: String) = Unit
             override fun onDiscoveryStopped(type: String) = Unit
-            override fun onStartDiscoveryFailed(type: String, code: Int) { runOnUiThread { if (!current.active) status.text = "Discovery failed. Reopen this screen to retry." } }
+            override fun onStartDiscoveryFailed(type: String, code: Int) { runOnUiThread { if (!current.active) Toast.makeText(this@DirectCastActivity, "Discovery failed. Reopen Cast to retry.", Toast.LENGTH_LONG).show() } }
             override fun onStopDiscoveryFailed(type: String, code: Int) = Unit
-            override fun onServiceFound(info: NsdServiceInfo) { runOnUiThread {
-                if (started && generation == discoveryGeneration) { pending.add(info); resolveNext(generation) }
-            } }
-            override fun onServiceLost(info: NsdServiceInfo) { runOnUiThread {
-                if (generation == discoveryGeneration) { receivers.remove(info.serviceName); renderReceivers() }
-            } }
+            override fun onServiceFound(info: NsdServiceInfo) { runOnUiThread { if (started && generation == discoveryGeneration) { pending.add(info); resolveNext(generation) } } }
+            override fun onServiceLost(info: NsdServiceInfo) { runOnUiThread { if (generation == discoveryGeneration) { receivers.remove(info.serviceName); refreshDeviceList() } } }
         }
         listener = discovery
         try { nsd.discoverServices("_googlecast._tcp.", NsdManager.PROTOCOL_DNS_SD, discovery) }
-        catch (_: Exception) { status.text = "Could not discover receivers. Use VLC casting or reopen this screen." }
+        catch (_: Exception) { Toast.makeText(this, "Could not discover receivers. Try VLC casting.", Toast.LENGTH_LONG).show() }
     }
 
     private fun resolveNext(generation: Int) {
         if (resolving || !started || generation != discoveryGeneration || pending.isEmpty()) return
         val info = pending.removeFirst(); resolving = true
         try { nsd.resolveService(info, object : NsdManager.ResolveListener {
-            override fun onResolveFailed(service: NsdServiceInfo, code: Int) { runOnUiThread {
-                if (generation == discoveryGeneration) { resolving = false; resolveNext(generation) }
-            } }
-            override fun onServiceResolved(service: NsdServiceInfo) { runOnUiThread {
-                if (started && generation == discoveryGeneration) {
-                    resolving = false; receivers[service.serviceName] = service; renderReceivers(); resolveNext(generation)
-                }
-            } }
+            override fun onResolveFailed(service: NsdServiceInfo, code: Int) { runOnUiThread { if (generation == discoveryGeneration) { resolving = false; resolveNext(generation) } } }
+            override fun onServiceResolved(service: NsdServiceInfo) { runOnUiThread { if (started && generation == discoveryGeneration) { resolving = false; receivers[service.serviceName] = service; refreshDeviceList(); resolveNext(generation) } } }
         }) } catch (_: Exception) { resolving = false; resolveNext(generation) }
     }
 
     override fun onStop() {
         started = false; discoveryGeneration++; pending.clear(); resolving = false
+        controls.removeCallbacks(clock)
         listener?.let { runCatching { nsd.stopServiceDiscovery(it) } }; listener = null
         multicast?.let { if (it.isHeld) it.release() }; multicast = null
+        deviceDialog?.dismiss(); deviceDialog = null
         super.onStop()
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == PICK_SUBTITLE && resultCode == RESULT_OK && data?.data != null) {
-            pendingSubtitle = data.data.toString()
-            runCatching { contentResolver.takePersistableUriPermission(data.data!!, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
-            subtitles.text = "Subtitles selected — choose another"
-            clearSubtitles.isEnabled = true
-            if (current.connected) command(DirectCastService.SUBTITLE) { putExtra("subtitle", pendingSubtitle) }
-        }
+        if (resultCode != RESULT_OK || data == null) return
+        val selected = when (requestCode) {
+            PICK_LOCAL_SUBTITLE -> data.getStringExtra(EXTRA_MRL)?.let(Uri::parse)
+            PICK_SYSTEM_SUBTITLE -> data.data
+            else -> null
+        } ?: return
+        pendingSubtitle = selected.toString()
+        if (selected.scheme == "content") runCatching { contentResolver.takePersistableUriPermission(selected, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+        if (current.connected) command(DirectCastService.SUBTITLE) { putExtra("subtitle", pendingSubtitle) }
+        else Toast.makeText(this, "Subtitles selected", Toast.LENGTH_SHORT).show()
+        render()
     }
 
-    override fun onSaveInstanceState(outState: Bundle) { outState.putString("subtitle", pendingSubtitle); super.onSaveInstanceState(outState) }
-
-    private fun format(ms: Long): String = String.format(Locale.ROOT, "%d:%02d", ms.coerceAtLeast(0) / 60000, (ms.coerceAtLeast(0) / 1000) % 60)
-
-    companion object { const val REQUEST = 7391; private const val PICK_SUBTITLE = 7392 }
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putString("subtitle", pendingSubtitle); outState.putBoolean("convert", convertBeforeConnect)
+        super.onSaveInstanceState(outState)
+    }
+    companion object { const val REQUEST = 7391; private const val PICK_SYSTEM_SUBTITLE = 7392; private const val PICK_LOCAL_SUBTITLE = 7393 }
 }
