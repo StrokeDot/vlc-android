@@ -29,6 +29,8 @@
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
 
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE"/>
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE"/>
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS"/>
     <uses-permission android:name="android.permission.BLUETOOTH"/>
@@ -67,6 +69,10 @@
     </queries>
 
     <application>
+
+        <activity android:name=".cast.DirectCastActivity" android:exported="false" />
+        <service android:name=".cast.DirectCastService" android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
 
         <!-- Enable VLC in Samsung multiwindow mode -->
         <meta-data

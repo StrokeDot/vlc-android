@@ -1,7 +1,7 @@
 name: VLC Plus Android debug APK
 on:
   push:
-    branches: [bluevlc/bootstrap, vlcplus/in-app-updater]
+    branches: [bluevlc/bootstrap, vlcplus/in-app-updater, vlcplus/direct-cast-subtitles]
   workflow_dispatch:
 permissions:
   contents: read

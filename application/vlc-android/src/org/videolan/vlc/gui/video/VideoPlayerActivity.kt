@@ -197,6 +197,7 @@ import org.videolan.vlc.gui.dialogs.PlaybackSpeedDialog
 import org.videolan.vlc.gui.dialogs.RENAME_DIALOG_MEDIA
 import org.videolan.vlc.gui.dialogs.RENAME_DIALOG_NEW_NAME
 import org.videolan.vlc.gui.dialogs.RenderersDialog
+import org.videolan.vlc.cast.DirectCastActivity
 import org.videolan.vlc.gui.dialogs.SleepTimerDialog
 import org.videolan.vlc.gui.dialogs.VLCBottomSheetDialogFragment.Companion.shouldInterceptRemote
 import org.videolan.vlc.gui.dialogs.adapters.VlcTrack
@@ -1188,6 +1189,11 @@ open class VideoPlayerActivity : AppCompatActivity(), PlaybackService.Callback, 
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == DirectCastActivity.REQUEST) {
+            if (resultCode == RESULT_FIRST_USER && supportFragmentManager.findFragmentByTag("renderers") == null)
+                RenderersDialog().show(supportFragmentManager, "renderers")
+            return
+        }
         if (data == null) return
 
         if (data.hasExtra(EXTRA_MRL)) {
@@ -2002,7 +2008,15 @@ open class VideoPlayerActivity : AppCompatActivity(), PlaybackService.Callback, 
             }
             R.id.player_overlay_navmenu -> showNavMenu()
             R.id.player_overlay_length, R.id.player_overlay_time -> toggleTimeDisplay()
-            R.id.video_renderer -> if (supportFragmentManager.findFragmentByTag("renderers") == null)
+            R.id.video_renderer -> if (Build.VERSION.SDK_INT >= 21) {
+                service?.let { playback ->
+                    startActivityForResult(Intent(this, DirectCastActivity::class.java)
+                        .putExtra("uri", playback.currentMediaLocation)
+                        .putExtra("title", playback.title)
+                        .putExtra("position", playback.getTime())
+                        .putExtra("duration", playback.length), DirectCastActivity.REQUEST)
+                }
+            } else if (supportFragmentManager.findFragmentByTag("renderers") == null)
                 RenderersDialog().show(supportFragmentManager, "renderers")
             R.id.video_secondary_display -> {
                 clone = displayManager.isSecondary

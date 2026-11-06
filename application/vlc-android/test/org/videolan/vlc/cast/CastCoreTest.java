@@ -70,7 +70,7 @@ public final class CastCoreTest {
         System.out.println("Direct Cast core: " + checks + " checks passed");
     }
     private static HttpURLConnection request(String url,String method,String range) throws Exception {
-        HttpURLConnection c=(HttpURLConnection)new URL(url).openConnection();
+        HttpURLConnection c=(HttpURLConnection)URI.create(url).toURL().openConnection();
         c.setConnectTimeout(2000);c.setReadTimeout(2000);c.setRequestMethod(method);
         if(range!=null)c.setRequestProperty("Range",range);return c;
     }
