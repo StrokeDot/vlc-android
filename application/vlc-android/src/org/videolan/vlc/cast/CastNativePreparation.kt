@@ -28,8 +28,11 @@ internal object CastNativePreparation {
             val duration = source.duration
             // Wait for Stopped/INPUT_EVENT_DEAD: EndReached is emitted before
             // native stream output teardown, where buffered packets are finalized.
-            source.addOption(":sout=#transcode{acodec=mp4a,ab=192,channels=2}:standard{access=file,mux=mp4,dst='${output.path}'}")
-            source.addOption(":sout-mux-caching=0")
+            val mux = if (copyVideo) "mp4frag" else "mp4"
+            source.addOption(":sout=#transcode{acodec=mp4a,ab=192,channels=2}:standard{access=file,mux=$mux,dst='${output.path}'}")
+            // Reserve media-time buffering for the AAC encoder to register its track
+            // before the MP4 header is written. This is not a wall-clock sleep.
+            source.addOption(":sout-mux-caching=${if (copyVideo) 1000 else 0}")
             if (!copyVideo) source.addOption(":no-sout-video")
             val done = CastConversionSignal()
             val position = AtomicLong(0)

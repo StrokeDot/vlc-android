@@ -150,9 +150,10 @@ internal class CastConnection(
         }
     }
 
-    fun load(url: String, mime: String, title: String, positionMs: Long, subtitleUrl: String?, autoplay: Boolean = true) {
+    fun load(url: String, mime: String, title: String, positionMs: Long, subtitleUrl: String?, autoplay: Boolean = true, durationMs: Long = 0) {
         val media = JSONObject().put("contentId", url).put("contentType", mime).put("streamType", "BUFFERED")
             .put("metadata", JSONObject().put("metadataType", 0).put("title", title))
+        if (durationMs > 0) media.put("duration", durationMs / 1000.0)
         val command = JSONObject().put("type", "LOAD").put("media", media)
             .put("autoplay", autoplay).put("currentTime", positionMs.coerceAtLeast(0) / 1000.0)
         receiverSession?.let { command.put("sessionId", it) }

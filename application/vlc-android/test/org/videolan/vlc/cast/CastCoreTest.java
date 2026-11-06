@@ -113,6 +113,49 @@ public final class CastCoreTest {
             check(new String(c.getInputStream().readAllBytes(),StandardCharsets.UTF_8).equals(vtt));c.disconnect();
             c=request(url,"POST",null);check(c.getResponseCode()==405);c.disconnect();
         } finally { media.delete(); }
+        File sustained = File.createTempFile("cast-delivery", ".mp4");
+        byte[] block = new byte[128 * 1024];
+        new java.util.Random(817203L).nextBytes(block);
+        try {
+            try(OutputStream file=new FileOutputStream(sustained)) {
+                for(int i=0;i<256;i++) { block[0]=(byte)i; block[1]=(byte)(i>>>8); file.write(block); }
+            }
+            final long[] starts={0, 3*1024*1024+17, 9*1024*1024+113};
+            final byte[][] expected=new byte[3][];
+            try(RandomAccessFile file=new RandomAccessFile(sustained,"r")) {
+                for(int i=0;i<starts.length;i++) {
+                    file.seek(starts[i]); java.security.MessageDigest digest=java.security.MessageDigest.getInstance("SHA-256");
+                    long left=8*1024*1024;
+                    while(left>0){int n=file.read(block,0,(int)Math.min(block.length,left));digest.update(block,0,n);left-=n;}
+                    expected[i]=digest.digest();
+                }
+            }
+            check(!Arrays.equals(expected[0],expected[1])&&!Arrays.equals(expected[1],expected[2]));
+            java.util.concurrent.ExecutorService clients=java.util.concurrent.Executors.newFixedThreadPool(3);
+            long started=System.nanoTime();
+            try(CastFileServer server=new CastFileServer(InetAddress.getLoopbackAddress(),sustained,"video/mp4")) {
+                String subs=server.setSubtitles(vtt);
+                for(int wave=0;wave<3;wave++) {
+                    java.util.List<java.util.concurrent.Future<Boolean>> transfers=new java.util.ArrayList<>();
+                    for(int client=0;client<3;client++) {
+                        final int index=client; final long offset=starts[client];
+                        transfers.add(clients.submit(()->{
+                            HttpURLConnection c=request(server.mediaUrl(),"GET","bytes="+offset+"-"+(offset+8*1024*1024-1));
+                            try(InputStream input=c.getInputStream()) {
+                                java.security.MessageDigest sum=java.security.MessageDigest.getInstance("SHA-256");
+                                byte[] buffer=new byte[128*1024];long bytes=0;
+                                for(int n;(n=input.read(buffer))>=0;){sum.update(buffer,0,n);bytes+=n;}
+                                return bytes==8*1024*1024 && Arrays.equals(sum.digest(),expected[index]);
+                            } finally {c.disconnect();}
+                        }));
+                    }
+                    HttpURLConnection c=request(subs,"GET",null);
+                    check(new String(c.getInputStream().readAllBytes(),StandardCharsets.UTF_8).equals(vtt));c.disconnect();
+                    for(java.util.concurrent.Future<Boolean> transfer:transfers) check(transfer.get(15,java.util.concurrent.TimeUnit.SECONDS));
+                }
+                System.out.println("Concurrent delivery: 72 MiB plus captions in "+((System.nanoTime()-started)/1000000)+" ms (loopback only)");
+            } finally {clients.shutdownNow();}
+        } finally {sustained.delete();}
         System.out.println("Direct Cast core: " + checks + " checks passed");
     }
     private static HttpURLConnection request(String url,String method,String range) throws Exception {

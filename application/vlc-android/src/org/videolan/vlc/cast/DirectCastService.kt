@@ -171,7 +171,7 @@ class DirectCastService : Service() {
         if (!destroyed && current.active) {
             val snapshot = current
             val position = snapshot.position + if (snapshot.playing) SystemClock.elapsedRealtime() - snapshot.positionUpdatedAt else 0
-            connection?.load(mediaUrl, mediaMime, title, position, subtitleUrl, !snapshot.connected || snapshot.playing)
+            connection?.load(mediaUrl, mediaMime, title, position, subtitleUrl, !snapshot.connected || snapshot.playing, snapshot.duration)
         }
     }
 
