@@ -55,10 +55,13 @@ class CastControllerDeviceTest {
 
     @Test fun subtitleFolderHandlesDocumentAndFileUris() {
         val authority = "com.android.externalstorage.documents"
-        for (path in listOf("primary:Movies/Film/movie.mkv", "ABCD-1234:Movies/Film/movie.mkv", "primary:movie.mkv")) {
+        for ((path, expected) in listOf(
+            "primary:Movies/Film/movie.mkv" to "primary:Movies/Film",
+            "ABCD-1234:Movies/Film/movie.mkv" to "ABCD-1234:Movies/Film",
+            "primary:movie.mkv" to "primary:"
+        )) {
             val uri = android.provider.DocumentsContract.buildDocumentUri(authority, path)
             val parent = CastMovieLocation.initialFolder(uri)!!
-            val expected = path.substringBefore(':') + ":" + path.substringAfter(':').substringBeforeLast('/', "")
             assertEquals(expected, android.provider.DocumentsContract.getDocumentId(parent))
         }
         assertEquals("primary:Movies/Film", android.provider.DocumentsContract.getDocumentId(

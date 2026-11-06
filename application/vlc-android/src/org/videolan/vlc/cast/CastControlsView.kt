@@ -54,7 +54,7 @@ class CastControlsView(context: Context, private val actions: Actions) : ScrollV
         addView(body, LayoutParams(-1, -2))
         val toolbar = LinearLayout(context).apply { gravity = Gravity.CENTER_VERTICAL }
         toolbar.addView(image(Glyph.BACK, "Back", 44) { actions.back() })
-        title.apply { tag = "cast_title"; setTypeface(typeface, Typeface.BOLD); maxLines = 1; ellipsize = TextUtils.TruncateAt.END }
+        title.apply { gravity = Gravity.CENTER_VERTICAL; tag = "cast_title"; setTypeface(typeface, Typeface.BOLD); maxLines = 1; ellipsize = TextUtils.TruncateAt.END }
         toolbar.addView(title, LinearLayout.LayoutParams(0, dp(48), 1f).apply { leftMargin = dp(8) })
         toolbar.addView(image(Glyph.CAST, "Choose casting device", 44) { actions.devices() })
         body.addView(toolbar)
@@ -74,7 +74,7 @@ class CastControlsView(context: Context, private val actions: Actions) : ScrollV
         bottom.addView(convertCard, LinearLayout.LayoutParams(0, dp(88), 1f).apply { rightMargin = dp(10) })
         bottom.addView(actionCard(Glyph.HELP, label("Help", 13f, muted), "Casting help") { actions.help() }, LinearLayout.LayoutParams(0, dp(88), 1f))
         grid.addView(top); grid.addView(bottom, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) })
-        actionRow.addView(grid, LinearLayout.LayoutParams(0, -2, 1f))
+        actionRow.addView(grid, LinearLayout.LayoutParams(0, -2, 2f))
         volumeRail = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL
             background = cardBackground()
@@ -83,7 +83,7 @@ class CastControlsView(context: Context, private val actions: Actions) : ScrollV
             addView(volumeText, LinearLayout.LayoutParams(-2, 0, 1f))
             addView(TextView(context).apply { text = "−"; textSize = 30f; setTextColor(white); gravity = Gravity.CENTER; contentDescription = "Volume down"; setOnClickListener { actions.volume(-0.05) } }, LinearLayout.LayoutParams(-1, dp(56)))
         }
-        actionRow.addView(volumeRail, LinearLayout.LayoutParams(dp(80), dp(186)).apply { leftMargin = dp(10) })
+        actionRow.addView(volumeRail, LinearLayout.LayoutParams(0, dp(186), 1f).apply { leftMargin = dp(10) })
         body.addView(actionRow, params(top = 14))
 
         val transport = LinearLayout(context).apply {
@@ -167,6 +167,7 @@ class CastControlsView(context: Context, private val actions: Actions) : ScrollV
         orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER; background = cardBackground()
         isClickable = true; isFocusable = true; contentDescription = description; setOnClickListener { action() }
         addView(ImageView(context).apply { setImageDrawable(GlyphDrawable(glyph, if (glyph == Glyph.CONVERT) blue else white)) }, LinearLayout.LayoutParams(dp(28), dp(28)))
+        text.gravity = Gravity.CENTER; text.maxLines = 2
         addView(text, LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(9) })
     }
     private enum class Glyph { BACK, CAST, STOP, SUBTITLE, CONVERT, HELP, VOLUME, PLAY, PAUSE, REWIND, FORWARD }

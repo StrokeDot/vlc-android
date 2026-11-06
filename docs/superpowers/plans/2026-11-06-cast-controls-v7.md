@@ -33,3 +33,19 @@ after playback starts. The supplied XPlayer screenshot is the layout reference.
 4. Core checks, codec fixtures, Android builds, independent review; sign/publish
    .7 with the same app identity. No receiver compatibility/performance claim
    beyond the user's confirmed smooth .6 prepared video.
+
+## Review follow-up
+
+The user confirmed the prepared movie plays smoothly but without sound. Preserve
+that path while fixing selection and audio recovery. Independent review found
+stale cross-movie metadata, non-atomic worker state updates, accumulated failed
+conversion files, and missing parent hints for document URIs. These are corrected
+and covered by movie-folder and concurrent state/Stop tests. Native conversion
+output is retained in CI only for synthetic-fixture diagnosis; release remains
+gated on successful Android codec tests.
+
+Android diagnosis confirmed the native MP3 conversion produced audible stereo
+but its video packetizer omitted the last fixture frame. The fallback now
+converts audio only to AAC, then attaches that audio using Android while copying
+every video sample from the original. The Dolby test retains strict compressed
+video payload/count/timestamp equality and also decodes AAC to reject silence.

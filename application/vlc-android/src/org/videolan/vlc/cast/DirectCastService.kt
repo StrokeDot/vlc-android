@@ -149,10 +149,14 @@ class DirectCastService : Service() {
             SUBTITLE -> if (current.connected && !current.preparing) scope.launch {
                 try {
                     val uri = intent.getStringExtra("subtitle")
-                    subtitleText = if (uri == null) null else readSubtitle(Uri.parse(uri))
-                    subtitleUrl = subtitleText?.let { server?.setSubtitles(it) }
-                    update { current.copy(subtitle = subtitleUrl != null, error = null) }
-                    loadCurrent()
+                    val text = if (uri == null) null else readSubtitle(Uri.parse(uri))
+                    synchronized(resources) {
+                        if (destroyed || !current.active) return@launch
+                        subtitleText = text
+                        subtitleUrl = text?.let { server?.setSubtitles(it) }
+                        update { current.copy(subtitle = subtitleUrl != null, error = null) }
+                        loadCurrent()
+                    }
                 } catch (e: Exception) { val message = e.message ?: "Could not load subtitles"; update { current.copy(message = message, error = message) } }
             }
         }
@@ -163,8 +167,12 @@ class DirectCastService : Service() {
         scope.launch { try { connection?.let(block) } catch (e: Exception) { failure(e.message ?: "The receiver did not respond") } }
     }
 
-    private fun loadCurrent() {
-        connection?.load(mediaUrl, mediaMime, title, current.position, subtitleUrl, !current.connected || current.playing)
+    private fun loadCurrent() = synchronized(resources) {
+        if (!destroyed && current.active) {
+            val snapshot = current
+            val position = snapshot.position + if (snapshot.playing) SystemClock.elapsedRealtime() - snapshot.positionUpdatedAt else 0
+            connection?.load(mediaUrl, mediaMime, title, position, subtitleUrl, !snapshot.connected || snapshot.playing)
+        }
     }
 
     private fun prepareAudioWhileCasting() {
@@ -183,9 +191,9 @@ class DirectCastService : Service() {
                 ctx.ensureActive()
                 val http = CastFileServer(requireNotNull(localAddress), prepared.file, prepared.mime)
                 candidate = http
-                val captions = subtitleText?.let { http.setSubtitles(it) }
                 synchronized(resources) {
-                    if (destroyed || !ctx.isActive) return@launch
+                    if (destroyed || !ctx.isActive || !current.active) return@launch
+                    val captions = subtitleText?.let { http.setSubtitles(it) }
                     server?.let { retiredServers.add(it to preparedFolder) }; server = http; preparedFolder = folder
                     candidate = null; retained = true
                     mediaUrl = http.mediaUrl(); mediaMime = prepared.mime; subtitleUrl = captions
@@ -213,8 +221,10 @@ class DirectCastService : Service() {
             stopSelf(); return
         }
         val duration = data.optJSONObject("media")?.optDouble("duration", 0.0)?.let { (it * 1000).toLong() } ?: current.duration
-        if (data.optJSONObject("media")?.optString("contentId") == mediaUrl) synchronized(resources) {
-            retiredServers.forEach { (http, folder) -> http.close(); folder?.deleteRecursively() }; retiredServers.clear()
+        synchronized(resources) {
+            if (data.optJSONObject("media")?.optString("contentId") == mediaUrl) {
+                retiredServers.forEach { (http, folder) -> http.close(); folder?.deleteRecursively() }; retiredServers.clear()
+            }
         }
         update { current.copy(connected = data.has("mediaSessionId"), playing = playing == "PLAYING",
             position = (data.optDouble("currentTime", current.position / 1000.0) * 1000).toLong(),

@@ -27,7 +27,7 @@ internal object CastAudioPreparation {
     private fun prepareWithVlc(context: Context, input: File, directory: File, check: () -> Unit,
                                progress: (String) -> Unit): CastPreparation.Prepared {
         progress("Converting audio with VLC…")
-        val output = File(directory, "compatible-audio.mp4")
+        val output = File(directory, "compatible-audio.m4a")
         val engine = LibVLC(context, arrayListOf("--no-video-title-show", "--quiet"))
         var media: Media? = null
         var player: MediaPlayer? = null
@@ -36,10 +36,11 @@ internal object CastAudioPreparation {
             check(); require(source.parse()) { "VLC could not read this file" }
             require((0 until source.trackCount).any { source.getTrack(it)?.type == IMedia.Track.Type.Audio }) { "No audio track could be found in this video" }
             val duration = source.duration
-            // Native VLC reads codecs omitted by MediaExtractor. MP3 stereo is
-            // Cast-compatible; unspecified video codec means sample passthrough.
-            source.addOption(":sout=#transcode{acodec=mp3,ab=192,channels=2}:standard{access=file,mux=mp4,dst='${output.path}'}")
+            // Decode only the audio here. Native video packetizing can lose its final
+            // buffered frame; the Android mux below copies every original video sample.
+            source.addOption(":sout=#transcode{acodec=mp4a,ab=192,channels=2}:standard{access=file,mux=mp4,dst='${output.path}'}")
             source.addOption(":sout-mux-caching=0")
+            source.addOption(":no-sout-video")
             val done = CountDownLatch(1)
             val failed = AtomicBoolean(false)
             val position = AtomicLong(0)
@@ -68,10 +69,11 @@ internal object CastAudioPreparation {
             require(!failed.get()) { "VLC could not convert this audio" }
             converter.stop()
             require(output.isFile && output.length() > 0) { "No converted audio file was produced" }
-            return CastPreparation.Prepared(output, "video/mp4")
+            return CastPreparation.withAudio(input, output, directory, check, progress)
         } finally {
             runCatching { player?.setEventListener(null) }; runCatching { player?.stop() }
             runCatching { player?.release() }; runCatching { media?.release() }; engine.release()
+            output.delete()
         }
     }
 }
