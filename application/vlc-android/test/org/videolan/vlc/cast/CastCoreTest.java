@@ -42,6 +42,16 @@ public final class CastCoreTest {
         rejects(()->CastAacSample.headerLength(java.nio.ByteBuffer.wrap(multi),multi.length));
         java.nio.ByteBuffer direct=java.nio.ByteBuffer.allocateDirect(adts.length);direct.put(adts);direct.flip();
         check(CastAacSample.headerLength(direct,adts.length)==7 && direct.position()==0);
+        CastSubtitleStyle style = new CastSubtitleStyle(2, 1.5, 1, 2, 1, true, true);
+        check(style.castStyle().get("fontGenericFamily").equals("MONOSPACED_SANS_SERIF"));
+        check(style.castStyle().get("fontScale").equals(1.5));
+        check(style.castStyle().get("foregroundColor").equals("#FFFF00FF"));
+        check(style.castStyle().get("fontStyle").equals("BOLD_ITALIC"));
+        check(style.castStyle().get("edgeType").equals("DROP_SHADOW"));
+        check(style.castStyle().get("backgroundColor").equals("#000000A0"));
+        style = new CastSubtitleStyle(99, Double.NaN, -1, 77, -9, false, false);
+        check(style.family == 0 && style.scale == 1.0 && style.color == 0 && style.edge == 1 && style.background == 0);
+        check(new CastSubtitleStyle().castStyle().get("backgroundColor").equals("#00000000"));
         CastConversionSignal signal = new CastConversionSignal();
         signal.inputEnded();
         check(!signal.await(1, java.util.concurrent.TimeUnit.MILLISECONDS));

@@ -17,7 +17,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 @TargetApi(23)
 internal object CastPipelinedPreparation {
     fun prepare(context: Context, input: File, directory: File, check: () -> Unit,
-                progress: (String) -> Unit): CastPreparation.Prepared {
+                progress: (String) -> Unit, fastAudio: Boolean = true): CastPreparation.Prepared {
         val stream = File(directory, "audio-stream.ts").apply { check(createNewFile()) }
         val aborted = AtomicBoolean(false)
         val closed = CountDownLatch(1)
@@ -27,7 +27,7 @@ internal object CastPipelinedPreparation {
             try {
                 CastNativePreparation.convert(context, input, stream, true, {
                     check(); if (aborted.get()) throw java.util.concurrent.CancellationException("Preparation stopped")
-                }, {})
+                }, {}, fastAudio)
             } finally { closed.countDown() }
         }
         var source: GrowingSource? = null

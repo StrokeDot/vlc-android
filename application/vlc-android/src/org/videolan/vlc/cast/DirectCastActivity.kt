@@ -108,10 +108,11 @@ class DirectCastActivity : AppCompatActivity(), CastControlsView.Actions {
     override fun subtitles() {
         if (current.preparing) return
         AlertDialog.Builder(this).setTitle("Subtitles")
-            .setItems(arrayOf("Choose from movie folder", "Choose using Files", "Off")) { _, index ->
+            .setItems(arrayOf("Choose from movie folder", "Choose using Files", "Appearance & preview", "Off")) { _, index ->
                 when (index) {
                     0 -> openMovieFolder()
                     1 -> openSystemPicker()
+                    2 -> CastSubtitleAppearance.show(this) { if (current.connected) command(DirectCastService.STYLE) }
                     else -> { pendingSubtitle = null; if (current.connected) command(DirectCastService.SUBTITLE); render() }
                 }
             }.show()
@@ -233,11 +234,13 @@ class DirectCastActivity : AppCompatActivity(), CastControlsView.Actions {
             PICK_SYSTEM_SUBTITLE -> data.data
             else -> null
         } ?: return
-        pendingSubtitle = selected.toString()
         if (selected.scheme == "content") runCatching { contentResolver.takePersistableUriPermission(selected, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
-        if (current.connected) command(DirectCastService.SUBTITLE) { putExtra("subtitle", pendingSubtitle) }
-        else Toast.makeText(this, "Subtitles selected", Toast.LENGTH_SHORT).show()
-        render()
+        CastSubtitleAppearance.show(this) {
+            pendingSubtitle = selected.toString()
+            if (current.connected) command(DirectCastService.SUBTITLE) { putExtra("subtitle", pendingSubtitle) }
+            else Toast.makeText(this, "Subtitles ready", Toast.LENGTH_SHORT).show()
+            render()
+        }
     }
 
     override fun onSaveInstanceState(outState: Bundle) {

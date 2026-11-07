@@ -6,6 +6,9 @@ on:
     # the first signed APK. Subsequent releases use versioned tags / dispatch.
     branches: [vlcplus/first-signed-release]
     tags: [vlcplus-*]
+concurrency:
+  group: vlcplus-signed-${{ github.ref }}
+  cancel-in-progress: true
 permissions:
   contents: write
 
@@ -119,9 +122,10 @@ jobs:
             adb shell wm density 520
             adb shell am instrument -w -r com.strokedot.vlcplus.codectests.test/androidx.test.runner.AndroidJUnitRunner | tee codec-result.txt
             adb logcat -d -s VLCPlus/CastPerf:I > cast-performance.txt
+            cat cast-performance.txt
             adb logcat -d > cast-device-log.txt
             adb pull /sdcard/Android/data/com.strokedot.vlcplus.codectests/files/. cast-diagnostics
-            grep -q 'OK (14 tests)' codec-result.txt
+            grep -q 'OK (16 tests)' codec-result.txt
 
       - name: Save Android 16 controller screenshot
         if: always()

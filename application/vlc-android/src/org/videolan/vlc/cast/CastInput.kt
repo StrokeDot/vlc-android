@@ -13,6 +13,7 @@ internal object CastInput {
     data class Original(val source: CastFileServer.Source, val mime: String)
 
     fun open(context: Context, uri: Uri): Original {
+        if (uri.scheme == "content") CastMovieLocation.localFile(context, uri)?.let { return open(context, it) }
         var name = uri.lastPathSegment ?: ""
         var providerMime: String? = null
         val source: CastFileServer.Source = when (uri.scheme) {

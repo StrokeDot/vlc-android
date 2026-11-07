@@ -119,7 +119,8 @@ class DirectCastService : Service() {
                             ready = { loadCurrent() },
                             status = { receiveStatus(it) },
                             failed = { failure(it) },
-                            volumeChanged = { update { current.copy(volume = it) } })
+                            volumeChanged = { update { current.copy(volume = it) } },
+                            styleFailed = { message -> update { current.copy(error = message) } })
                         synchronized(resources) {
                             if (destroyed || !ctx.isActive) { http.close(); client.close(); return@launch }
                             server = http; connection = client
@@ -145,6 +146,7 @@ class DirectCastService : Service() {
             PLAY, PAUSE -> remote { it.command(if (intent.action == PLAY) "PLAY" else "PAUSE") }
             SEEK -> remote { it.command("SEEK", intent.getLongExtra("position", 0).coerceIn(0, current.duration.coerceAtLeast(0)), current.playing) }
             VOLUME -> remote { it.setVolume(intent.getDoubleExtra("volume", current.volume)) }
+            STYLE -> remote { it.setTextStyle(CastSubtitleAppearance.load(this)) }
             CONVERT -> prepareAudioWhileCasting()
             SUBTITLE -> if (current.connected && !current.preparing) scope.launch {
                 try {
@@ -171,7 +173,7 @@ class DirectCastService : Service() {
         if (!destroyed && current.active) {
             val snapshot = current
             val position = snapshot.position + if (snapshot.playing) SystemClock.elapsedRealtime() - snapshot.positionUpdatedAt else 0
-            connection?.load(mediaUrl, mediaMime, title, position, subtitleUrl, !snapshot.connected || snapshot.playing, snapshot.duration)
+            connection?.load(mediaUrl, mediaMime, title, position, subtitleUrl, !snapshot.connected || snapshot.playing, snapshot.duration, CastSubtitleAppearance.load(this))
         }
     }
 
@@ -288,6 +290,7 @@ class DirectCastService : Service() {
         const val SEEK = "vlcplus.cast.SEEK"
         const val SUBTITLE = "vlcplus.cast.SUBTITLE"
         const val CONVERT = "vlcplus.cast.CONVERT"
+        const val STYLE = "vlcplus.cast.STYLE"
         const val VOLUME = "vlcplus.cast.VOLUME"
         private const val CHANNEL = "vlcplus_direct_cast"
         private const val NOTIFICATION = 7319
