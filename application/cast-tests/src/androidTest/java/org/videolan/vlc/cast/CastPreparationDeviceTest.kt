@@ -283,7 +283,7 @@ class CastPreparationDeviceTest {
             val tracks = CastEmbeddedSubtitles.tracks(context, uri)
             assertTrue("Android must expose the real MKV embedded SRT track", tracks.any { it.format == "SRT" })
             val subtitles = CastEmbeddedSubtitles.extract(context, uri, tracks.first { it.format == "SRT" }.index)
-            assertTrue(subtitles.startsWith("WEBVTT\\n\\n"))
+            assertTrue(subtitles.startsWith("WEBVTT\n\n"))
             assertTrue(subtitles.contains("Embedded hello"))
             assertTrue(subtitles.contains("Second subtitle"))
             assertTrue(subtitles.contains("-->"))
