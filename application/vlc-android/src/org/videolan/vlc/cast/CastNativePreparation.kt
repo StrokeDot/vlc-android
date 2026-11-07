@@ -15,7 +15,7 @@ import java.util.concurrent.atomic.AtomicLong
 /** Native AAC encoding plus audio-only MP4 or a live MPEG-TS stream for the Android video muxer. */
 internal object CastNativePreparation {
     fun convert(context: Context, input: File, output: File, streaming: Boolean,
-                check: () -> Unit, progress: (String) -> Unit): File {
+                check: () -> Unit, progress: (String) -> Unit, fastAudio: Boolean = streaming): File {
         val label = "Converting audio with VLC"
         progress("$label…")
         val engine = LibVLC(context, arrayListOf("--no-video-title-show", "--verbose=0"))
@@ -30,7 +30,9 @@ internal object CastNativePreparation {
             // native stream output teardown, where buffered packets are finalized.
             val mux = if (streaming) "ts" else "mp4"
             val resample = if (streaming) ",samplerate=48000" else ""
-            source.addOption(":sout=#transcode{acodec=mp4a,ab=192,channels=2$resample}:standard{access=file,mux=$mux,dst='${output.path}'}")
+            // AAC's fast search avoids the default two-loop quantizer; preserve bitrate/profile.
+            val encoder = if (fastAudio) ",aenc=avcodec{options={aac_coder=fast}}" else ""
+            source.addOption(":sout=#transcode{acodec=mp4a$encoder,ab=192,channels=2$resample}:standard{access=file,mux=$mux,dst='${output.path}'}")
             source.addOption(":sout-mux-caching=0")
             source.addOption(":no-sout-video")
             source.addOption(":no-sout-spu")

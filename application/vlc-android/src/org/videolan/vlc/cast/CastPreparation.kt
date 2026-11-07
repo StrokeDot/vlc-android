@@ -17,11 +17,12 @@ internal object CastPreparation {
 
     fun prepare(context: Context, uri: Uri, directory: File, convertAudio: Boolean,
                 check: () -> Unit, progress: (String) -> Unit): Prepared {
-        val input = when (uri.scheme) {
-            "file", null -> File(requireNotNull(uri.path))
+        val local = CastMovieLocation.localFile(context, uri) ?: uri
+        val input = when (local.scheme) {
+            "file", null -> File(requireNotNull(local.path))
             "content" -> File(directory, "source").also { file ->
                 progress("Reading video…")
-                context.contentResolver.openInputStream(uri)?.use { source ->
+                context.contentResolver.openInputStream(local)?.use { source ->
                     file.outputStream().use { output ->
                         val buffer = ByteArray(256 * 1024)
                         while (true) { check(); val n = source.read(buffer); if (n < 0) break; output.write(buffer, 0, n) }

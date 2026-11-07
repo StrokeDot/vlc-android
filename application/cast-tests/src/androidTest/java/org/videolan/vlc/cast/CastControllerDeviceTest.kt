@@ -48,9 +48,60 @@ class CastControllerDeviceTest {
             val original = CastInput.open(context, uri)
             assertEquals("video/x-matroska", original.mime)
             assertEquals(expected.size.toLong(), original.source.length())
+            val folder = File(context.cacheDir, "provider-preparation-${System.nanoTime()}").apply { mkdirs() }
+            try {
+                CastPreparation.prepare(context, uri, folder, false, {}, {})
+                if (CastMovieLocation.localFile(context, uri) != null)
+                    assertFalse("Readable MediaStore files must not be staged", File(folder, "source").exists())
+            } finally { folder.deleteRecursively() }
             val tail = original.source.open(expected.size - 3L).use { it.readBytes() }
             assertArrayEquals(expected.takeLast(3).toByteArray(), tail)
         } finally { resolver.delete(uri, null, null) }
+    }
+
+    @Test fun channelDeliveryPreservesUnalignedRangeAndSubtitles() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val file = File(context.cacheDir, "channel-range.bin")
+        val bytes = ByteArray(512 * 1024) { (it * 31).toByte() }
+        file.writeBytes(bytes)
+        try {
+            CastFileServer(java.net.InetAddress.getLoopbackAddress(), file, "video/mp4").use { server ->
+                val connection = java.net.URL(server.mediaUrl()).openConnection() as java.net.HttpURLConnection
+                connection.setRequestProperty("Range", "bytes=17-400019")
+                try {
+                    assertEquals(206, connection.responseCode)
+                    assertArrayEquals(bytes.copyOfRange(17, 400020), connection.inputStream.use { it.readBytes() })
+                } finally { connection.disconnect() }
+                val captions = "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nTest\n"
+                assertEquals(captions, java.net.URL(server.setSubtitles(captions)).openStream().use { it.reader().readText() })
+            }
+        } finally { file.delete() }
+    }
+
+    @Test fun subtitlePreviewAppliesOnlyAfterConfirmationAndPersists() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        context.getSharedPreferences("cast_subtitle_style", 0).edit().clear().commit()
+        ActivityScenario.launch(ControllerPreviewActivity::class.java).use { scenario ->
+            scenario.onActivity { activity ->
+                var applied = 0
+                var dialog = CastSubtitleAppearance.show(activity) { applied++ }
+                dialog.window!!.decorView.findViewWithTag<android.widget.Spinner>("cast_style_font").setSelection(2)
+                dialog.getButton(android.app.AlertDialog.BUTTON_NEGATIVE).performClick()
+                assertEquals(0, applied); assertEquals(0, CastSubtitleAppearance.load(activity).family)
+                dialog = CastSubtitleAppearance.show(activity) { applied++ }
+                val root = dialog.window!!.decorView
+                root.findViewWithTag<android.widget.Spinner>("cast_style_font").setSelection(1)
+                root.findViewWithTag<android.widget.Spinner>("cast_style_color").setSelection(1)
+                root.findViewWithTag<android.widget.Spinner>("cast_style_size").setSelection(3)
+                root.findViewWithTag<android.widget.CheckBox>("cast_style_bold").isChecked = true
+                assertTrue(root.findViewWithTag<android.view.View>("cast_style_preview").isShown)
+                dialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick()
+                val style = CastSubtitleAppearance.load(activity)
+                assertEquals(1, applied); assertEquals(1, style.family); assertEquals(1, style.color)
+                assertEquals(1.5, style.scale, 0.001); assertTrue(style.bold)
+            }
+        }
+        context.getSharedPreferences("cast_subtitle_style", 0).edit().clear().commit()
     }
 
     @Test fun subtitleFolderHandlesDocumentAndFileUris() {

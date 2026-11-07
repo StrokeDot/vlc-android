@@ -24,7 +24,8 @@ internal class CastConnection(
     private val ready: () -> Unit,
     private val status: (JSONObject) -> Unit,
     private val failed: (String) -> Unit,
-    private val volumeChanged: (Double) -> Unit = {}
+    private val volumeChanged: (Double) -> Unit = {},
+    private val styleFailed: (String) -> Unit = {}
 ) : Closeable {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val request = AtomicInteger()
@@ -38,6 +39,7 @@ internal class CastConnection(
     private var launching = false
     private data class PendingLoad(val url: String, val previousSession: Long, val requestId: Int, val started: Long)
     @Volatile private var pendingLoad: PendingLoad? = null
+    private val styleRequests = HashSet<Int>() // Protected by writeLock; style rejection never ends playback.
 
     fun start() {
         scope.launch {
@@ -81,6 +83,7 @@ internal class CastConnection(
                         RECEIVER -> receiverStatus(data)
                         MEDIA -> when (data.optString("type")) {
                             "MEDIA_STATUS" -> {
+                                synchronized(writeLock) { styleRequests.remove(data.optInt("requestId", -1)) }
                                 val media = data.optJSONArray("status")?.optJSONObject(0)
                                 val waiting = pendingLoad
                                 if (media?.optString("idleReason") != "ERROR" && waiting != null && media != null &&
@@ -100,7 +103,12 @@ internal class CastConnection(
                                     }
                                 }
                             }
-                            "LOAD_FAILED", "LOAD_CANCELLED", "INVALID_REQUEST" -> throw IllegalStateException("The receiver could not play this file. Tap Convert to prepare compatible audio, or use VLC casting.")
+                            "INVALID_REQUEST" -> {
+                                if (synchronized(writeLock) { styleRequests.remove(data.optInt("requestId", -1)) }) {
+                                    styleFailed("The TV could not apply this subtitle style.")
+                                } else throw IllegalStateException("The receiver could not apply this command.")
+                            }
+                            "LOAD_FAILED", "LOAD_CANCELLED" -> throw IllegalStateException("The receiver could not play this file. Tap Convert to prepare compatible audio, or use VLC casting.")
                         }
                         CONNECTION -> if (data.optString("type") == "CLOSE") throw IllegalStateException("The receiver closed the casting connection")
                     }
@@ -150,7 +158,7 @@ internal class CastConnection(
         }
     }
 
-    fun load(url: String, mime: String, title: String, positionMs: Long, subtitleUrl: String?, autoplay: Boolean = true, durationMs: Long = 0) {
+    fun load(url: String, mime: String, title: String, positionMs: Long, subtitleUrl: String?, autoplay: Boolean = true, durationMs: Long = 0, style: CastSubtitleStyle = CastSubtitleStyle()) {
         val media = JSONObject().put("contentId", url).put("contentType", mime).put("streamType", "BUFFERED")
             .put("metadata", JSONObject().put("metadataType", 0).put("title", title))
         if (durationMs > 0) media.put("duration", durationMs / 1000.0)
@@ -161,7 +169,7 @@ internal class CastConnection(
             media.put("tracks", JSONArray().put(JSONObject().put("trackId", 1).put("type", "TEXT")
                 .put("subtype", "SUBTITLES").put("trackContentId", subtitleUrl)
                 .put("trackContentType", "text/vtt").put("language", "und").put("name", "Subtitles")))
-            media.put("textTrackStyle", JSONObject().put("backgroundColor", "#00000000").put("foregroundColor", "#FFFFFFFF").put("edgeType", "OUTLINE").put("edgeColor", "#000000FF"))
+            media.put("textTrackStyle", JSONObject(style.castStyle()))
             command.put("activeTrackIds", JSONArray().put(1))
         }
         synchronized(writeLock) {
@@ -177,6 +185,16 @@ internal class CastConnection(
         if (positionMs != null) data.put("currentTime", positionMs.coerceAtLeast(0) / 1000.0)
             .put("resumeState", if (playing) "PLAYBACK_START" else "PLAYBACK_PAUSE")
         transport?.let { send(it, MEDIA, data) }
+    }
+
+    fun setTextStyle(style: CastSubtitleStyle) {
+        val id = mediaSession ?: return
+        synchronized(writeLock) {
+            val target = transport ?: return
+            styleRequests.add(request.get() + 1)
+            send(target, MEDIA, JSONObject().put("type", "EDIT_TRACKS_INFO").put("mediaSessionId", id)
+                .put("textTrackStyle", JSONObject(style.castStyle())))
+        }
     }
 
     fun setVolume(level: Double) {

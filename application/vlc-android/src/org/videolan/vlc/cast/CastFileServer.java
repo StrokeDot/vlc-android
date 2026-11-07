@@ -3,6 +3,8 @@ package org.videolan.vlc.cast;
 
 import java.io.*;
 import java.net.*;
+import java.nio.channels.FileChannel;
+import java.nio.channels.ServerSocketChannel;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.*;
@@ -42,7 +44,8 @@ public final class CastFileServer implements Closeable {
     }
     public CastFileServer(InetAddress address,Source source,String mime) throws IOException {
         if(source.length()<=0)throw new IOException("Media length is unavailable");
-        this.source=source;this.mime=mime;server=new ServerSocket(0,8,address);
+        this.source=source;this.mime=mime;server=ServerSocketChannel.open().socket();
+        try{server.bind(new InetSocketAddress(address,0),8);}catch(IOException e){server.close();throw e;}
         Thread thread=new Thread(()->{
             while(!closed){
                 try{Socket socket=server.accept();socket.setSoTimeout(15000);sockets.add(socket);
@@ -81,8 +84,21 @@ public final class CastFileServer implements Closeable {
             long count=Math.max(0,end-start+1);
             head(out,partial?206:200,partial?"Partial Content":"OK",count,media?mime:"text/vtt; charset=utf-8",partial?"bytes "+start+"-"+end+"/"+length:null,origin);
             if(request[0].equals("HEAD"))return;
-            if(media){try(InputStream input=source.open(start)){
-                byte[] buf=new byte[128*1024];long left=count;
+            if(media){
+                long sent=0;
+                // Let the kernel deliver file pages directly; avoid a Java read/copy per chunk.
+                if(source instanceof FileSource && socket.getChannel()!=null){
+                    try(RandomAccessFile input=new RandomAccessFile(((FileSource)source).file,"r")){
+                        FileChannel file=input.getChannel();
+                        while(sent<count&&!closed){
+                            long n=file.transferTo(start+sent,Math.min(8L*1024*1024,count-sent),socket.getChannel());
+                            if(n<=0)break; // Some providers/platforms need the portable copy path.
+                            sent+=n;
+                        }
+                    }
+                }
+                if(sent<count)try(InputStream input=source.open(start+sent)){
+                byte[] buf=new byte[128*1024];long left=count-sent;
                 while(left>0&&!closed){int n=input.read(buf,0,(int)Math.min(buf.length,left));if(n<0)break;out.write(buf,0,n);left-=n;}
             }}else if(count>0)out.write(text,(int)start,(int)count);
             out.flush();

@@ -49,3 +49,21 @@ Fixtures are synthetic two-second test patterns and sine-wave clips.
 Device acceptance remains: discover both receivers; show captions on the TV;
 play smoothly; seek ±15 seconds; repeat after audio preparation; continue with
 the phone screen off; stop from phone or receiver and verify disconnection.
+
+## Subtitle appearance
+
+Open **Subtitle → Appearance & preview** to choose font family, size, text color,
+outline/shadow, dark background, bold and italic. The preview changes immediately;
+**Apply** saves the settings and updates the TV without reloading the movie.
+Newly selected subtitle files show the same preview before they are loaded.
+Cancel leaves the previous subtitle/settings in place. Actual font rendering can
+vary with the receiver's installed fonts.
+
+## Performance
+
+Readable MediaStore paths bypass the full source-file staging copy. The overlapping
+Dolby audio path uses the fast AAC search at the existing stereo/192kbps/48kHz settings;
+the compatibility path retains the previous encoder settings. Regular files are
+served through channel transfer, with portable stream copying for other sources.
+Video frames and original frame rate remain unchanged. TV-rendered FPS is not
+reported by the standard control channel, so real-TV smoothness needs device testing.
