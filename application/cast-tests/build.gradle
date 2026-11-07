@@ -6,7 +6,7 @@ plugins {
 def castSources = layout.buildDirectory.dir('generated/cast-source')
 def copyCastPreparation = tasks.register('copyCastPreparation', Copy) {
     from('../vlc-android/src/org/videolan/vlc/cast') {
-        include 'CastSubtitleStyle.java', 'CastSubtitleAppearance.kt', 'CastPreparedCache.kt', 'CastPreparation.kt', 'CastAudioPreparation.kt', 'CastNativePreparation.kt', 'CastPipelinedPreparation.kt', 'CastVideoValidation.kt', 'CastConversionSignal.java', 'CastGrowingFile.java', 'CastAacSample.java', 'CastInput.kt', 'CastFileServer.java', 'CastControlsView.kt', 'CastMovieLocation.kt', 'CastStateStore.kt'
+        include 'CastSubtitleStyle.java', 'CastSubtitleAppearance.kt', 'CastEmbeddedSubtitles.kt', 'CastPreparedCache.kt', 'CastPreparation.kt', 'CastAudioPreparation.kt', 'CastNativePreparation.kt', 'CastPipelinedPreparation.kt', 'CastVideoValidation.kt', 'CastConversionSignal.java', 'CastGrowingFile.java', 'CastAacSample.java', 'CastInput.kt', 'CastFileServer.java', 'CastControlsView.kt', 'CastMovieLocation.kt', 'CastStateStore.kt'
     }
     into castSources
 }
