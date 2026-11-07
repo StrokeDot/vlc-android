@@ -24,12 +24,20 @@ internal object CastPipelinedPreparation {
         val closed = CountDownLatch(1)
         val executor = Executors.newSingleThreadExecutor { task -> Thread(task, "VLCPlus-AAC").apply { isDaemon = true } }
         val started = SystemClock.elapsedRealtime()
+        val muxStarted = AtomicBoolean(false)
         val writer = executor.submit<File> {
             try {
                 CastNativePreparation.convert(context, input, stream, true, {
                     check(); if (aborted.get()) throw java.util.concurrent.CancellationException("Preparation stopped")
-                }, {}, fastAudio, pcm = platformEncoder)
-            } finally { closed.countDown() }
+                }, { update ->
+                    // Before the muxer can read a usable header, show audio
+                    // progress instead of the unhelpful permanent "0%".
+                    if (!muxStarted.get()) progress(update)
+                }, fastAudio, pcm = platformEncoder)
+            } finally {
+                Log.i("VLCPlus/CastPerf", "stage=native-audio elapsedMs=${SystemClock.elapsedRealtime() - started} intermediateBytes=${stream.length()}")
+                closed.countDown()
+            }
         }
         var source: GrowingSource? = null
         var audio: MediaExtractor? = null
@@ -38,6 +46,7 @@ internal object CastPipelinedPreparation {
             val data = GrowingSource(stream, writer, aborted, check); source = data
             val extractor = MediaExtractor(); audio = extractor
             extractor.setDataSource(data)
+            muxStarted.set(true)
             Log.i("VLCPlus/CastPerf", "path=${if (platformEncoder) "platform-aac" else "pipelined"} muxStartMs=${SystemClock.elapsedRealtime() - started} encoderComplete=${writer.isDone}")
             val prepared = if (platformEncoder) {
                 CastPreparation.prepare(context, android.net.Uri.fromFile(input), directory, true, check, progress, extractor)
@@ -45,6 +54,7 @@ internal object CastPipelinedPreparation {
                 CastPreparation.withAudioStream(input, extractor, directory, check, progress)
             }
             writer.get(); check()
+            Log.i("VLCPlus/CastPerf", "stage=finished totalMs=${SystemClock.elapsedRealtime() - started} outputBytes=${prepared.file.length()}")
             return prepared
         } finally {
             // An interrupted conversion must not occupy the phone indefinitely.
