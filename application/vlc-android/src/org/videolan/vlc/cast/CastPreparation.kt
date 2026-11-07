@@ -16,7 +16,7 @@ internal object CastPreparation {
     class AudioUnsupported(val input: File, cause: Throwable? = null) : Exception("Android could not read or convert this audio", cause)
 
     fun prepare(context: Context, uri: Uri, directory: File, convertAudio: Boolean,
-                check: () -> Unit, progress: (String) -> Unit): Prepared {
+                check: () -> Unit, progress: (String) -> Unit, pcmAudio: MediaExtractor? = null): Prepared {
         val local = CastMovieLocation.localFile(context, uri) ?: uri
         val input = when (local.scheme) {
             "file", null -> File(requireNotNull(local.path))
@@ -43,20 +43,21 @@ internal object CastPreparation {
         } finally { metadata.release() }
         if (!convertAudio && mime in listOf("video/mp4", "video/webm")) return Prepared(input, mime)
         require(directory.usableSpace > input.length() + 64L * 1024 * 1024) { "Not enough temporary storage to prepare this video" }
-        val output = File(directory, "prepared.mp4")
+        val output = File(directory, if (pcmAudio == null) "prepared.mp4" else "platform-aac.mp4")
         val probe = MediaExtractor()
         try {
             probe.setDataSource(input.path)
             val video = (0 until probe.trackCount).firstOrNull { probe.getTrackFormat(it).getString(MediaFormat.KEY_MIME)?.startsWith("video/") == true }
                 ?: error("No video track found")
-            val audio = (0 until probe.trackCount).firstOrNull { probe.getTrackFormat(it).getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true }
+            val audioSource = pcmAudio ?: probe
+            val audio = (0 until audioSource.trackCount).firstOrNull { audioSource.getTrackFormat(it).getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true }
             if (convertAudio && audio == null) throw AudioUnsupported(input)
             val videoMime = probe.getTrackFormat(video).getString(MediaFormat.KEY_MIME)
             require(videoMime in listOf("video/avc", "video/hevc", "video/mp4v-es")) { "This video format needs VLC casting" }
-            val audioMime = audio?.let { probe.getTrackFormat(it).getString(MediaFormat.KEY_MIME) }
+            val audioMime = audio?.let { audioSource.getTrackFormat(it).getString(MediaFormat.KEY_MIME) }
             if (audio != null && (convertAudio || audioMime != "audio/mp4a-latm")) {
                 progress("Preparing audio for TV… 0%")
-                try { convert(input, output, video, audio, rotation, check, progress) }
+                try { convert(input, output, video, audio, rotation, check, progress, pcmAudio) }
                 catch (e: java.util.concurrent.CancellationException) { throw e }
                 catch (e: Exception) { throw AudioUnsupported(input, e) }
             } else {
@@ -171,15 +172,17 @@ internal object CastPreparation {
     }
 
     private fun convert(input: File, output: File, videoTrack: Int, audioTrack: Int, rotation: Int,
-                        check: () -> Unit, progress: (String) -> Unit) {
-        val audio = MediaExtractor()
+                        check: () -> Unit, progress: (String) -> Unit, pcmAudio: MediaExtractor?) {
+        val audio = pcmAudio ?: MediaExtractor()
         val video = MediaExtractor()
         var decoder: MediaCodec? = null
         var encoder: MediaCodec? = null
         var muxer: MediaMuxer? = null
         var muxStarted = false
         try {
-            audio.setDataSource(input.path); audio.selectTrack(audioTrack)
+            if (pcmAudio == null) audio.setDataSource(input.path)
+            audio.selectTrack(audioTrack)
+            val audioOrigin = if (pcmAudio == null) 0L else audio.sampleTime.coerceAtLeast(0)
             video.setDataSource(input.path); video.selectTrack(videoTrack)
             val inputFormat = audio.getTrackFormat(audioTrack)
             inputFormat.setInteger("pcm-encoding", AudioFormat.ENCODING_PCM_16BIT)
@@ -229,7 +232,7 @@ internal object CastPreparation {
                         if (size < 0) { dec.queueInputBuffer(index, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM); inputDone = true }
                         else {
                             require(audio.sampleFlags and MediaExtractor.SAMPLE_FLAG_ENCRYPTED == 0) { "Protected audio cannot be prepared" }
-                            dec.queueInputBuffer(index, 0, size, audio.sampleTime.coerceAtLeast(0), 0); audio.advance()
+                            dec.queueInputBuffer(index, 0, size, (audio.sampleTime - audioOrigin).coerceAtLeast(0), 0); audio.advance()
                         }
                         advanced = true
                     }
@@ -277,9 +280,13 @@ internal object CastPreparation {
                         val outChannels = channels.coerceAtMost(2)
                         val frames = minOf(source.remaining() / (channels * 2), bytes.remaining() / (outChannels * 2))
                         require(frames > 0) { "Invalid PCM audio buffer" }
-                        for (frame in 0 until frames) {
-                            if (channels <= 2) repeat(channels) { bytes.putShort(source.short) }
-                            else {
+                        if (channels <= 2) {
+                            val limit = source.limit()
+                            source.limit(source.position() + frames * channels * 2)
+                            bytes.put(source)
+                            source.limit(limit)
+                        } else {
+                            for (frame in 0 until frames) {
                                 var left = 0.0; var right = 0.0
                                 for (channel in 0 until channels) {
                                     val value = source.short.toInt()
@@ -333,7 +340,7 @@ internal object CastPreparation {
         } finally {
             runCatching { decoder?.stop() }; runCatching { decoder?.release() }
             runCatching { encoder?.stop() }; runCatching { encoder?.release() }
-            try { if (muxStarted) muxer?.stop() } finally { muxer?.release(); audio.release(); video.release() }
+            try { if (muxStarted) muxer?.stop() } finally { muxer?.release(); if (pcmAudio == null) audio.release(); video.release() }
         }
     }
 }

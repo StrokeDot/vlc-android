@@ -161,7 +161,7 @@ class CastPreparationDeviceTest {
         try {
             val input = File(folder, name)
             instrumentation.context.assets.open(name).use { source -> input.outputStream().use { source.copyTo(it) } }
-            val output = CastAudioPreparation.prepare(context, Uri.fromFile(input), folder, {}, {}).file
+            val output = CastPipelinedPreparation.prepare(context, input, folder, {}, {}, platformEncoder = true).file
             output.copyTo(File(context.getExternalFilesDir(null), name.removeSuffix(".mkv") + "-output.mp4"), overwrite = true)
             assertTrue(CastVideoValidation.matches(input, output, {}))
             assertSameVideo(input, output)
@@ -249,20 +249,13 @@ class CastPreparationDeviceTest {
             val legacy = File(folder, "legacy").apply { mkdirs() }
             val fast = File(folder, "fast").apply { mkdirs() }
             val started = android.os.SystemClock.elapsedRealtime()
-            val old = CastPipelinedPreparation.prepare(context, input, legacy, {}, {}, fastAudio = false).file
+            val old = CastPipelinedPreparation.prepare(context, input, legacy, {}, {}).file
             val oldDuration = android.os.SystemClock.elapsedRealtime() - started
             val begin = android.os.SystemClock.elapsedRealtime()
-            val maxAudioBytes = java.util.concurrent.atomic.AtomicLong(0)
-            val muxAudioBytes = java.util.concurrent.atomic.AtomicLong(-1)
-            val output = CastAudioPreparation.prepare(context, Uri.fromFile(input), fast, {
-                val bytes = File(fast, "audio-stream.ts").length()
-                maxAudioBytes.updateAndGet { maxOf(it, bytes) }
-                if (File(fast, "pipelined.mp4").length() > 0) muxAudioBytes.compareAndSet(-1, bytes)
-            }, {}).file
+            val output = CastPipelinedPreparation.prepare(context, input, fast, {}, {}, platformEncoder = true).file
             val newDuration = android.os.SystemClock.elapsedRealtime() - begin
-            android.util.Log.i("VLCPlus/CastPerf", "fixture=120s-60fps baselineVersion=8 baselineMs=$oldDuration combinedMs=$newDuration inputBytes=${input.length()}")
-            assertTrue("Video muxing must overlap audio encoding", muxAudioBytes.get() >= 0 && muxAudioBytes.get() < maxAudioBytes.get())
-            assertEquals("pipelined.mp4", output.name)
+            android.util.Log.i("VLCPlus/CastPerf", "fixture=120s-60fps baselineVersion=9 baselineMs=$oldDuration platformMs=$newDuration inputBytes=${input.length()}")
+            assertEquals("platform-aac.mp4", output.name)
             assertTrue(CastVideoValidation.matches(input, old, {}))
             assertTrue(CastVideoValidation.matches(input, output, {}))
             assertTrue(decoded(output, "audio/").peak > 256)
