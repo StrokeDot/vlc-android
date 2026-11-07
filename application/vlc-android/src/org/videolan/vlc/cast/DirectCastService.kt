@@ -54,6 +54,7 @@ class DirectCastService : Service() {
     private var mediaMime = ""
     private var title = ""
     private var device = ""
+    @Volatile private var playbackRequested = true
     private var bufferingSinceMs = 0L
     private var bufferingAtPositionMs = -1L
     private var bufferingWarningIssued = false
@@ -85,6 +86,7 @@ class DirectCastService : Service() {
                 if (current.active) return START_NOT_STICKY
                 device = intent.getStringExtra("device") ?: "TV"
                 title = intent.getStringExtra("title") ?: "Video"
+                playbackRequested = true
                 bufferingSinceMs = 0L
                 bufferingAtPositionMs = -1L
                 bufferingWarningIssued = false
@@ -143,6 +145,7 @@ class DirectCastService : Service() {
             }
             STOP -> {
                 job?.cancel(); conversionJob?.cancel()
+                playbackRequested = false
                 update { current.copy(active = false, connected = false, preparing = false, message = "Disconnected") }
                 val client = connection
                 scope.launch {
@@ -151,7 +154,10 @@ class DirectCastService : Service() {
                     stopSelf()
                 }
             }
-            PLAY, PAUSE -> remote { it.command(if (intent.action == PLAY) "PLAY" else "PAUSE") }
+            PLAY, PAUSE -> {
+                playbackRequested = intent.action == PLAY
+                remote { it.command(if (intent.action == PLAY) "PLAY" else "PAUSE") }
+            }
             SEEK -> remote { it.command("SEEK", intent.getLongExtra("position", 0).coerceIn(0, current.duration.coerceAtLeast(0)), current.playing) }
             VOLUME -> remote { it.setVolume(intent.getDoubleExtra("volume", current.volume)) }
             STYLE -> remote { it.setTextStyle(CastSubtitleAppearance.load(this)) }
@@ -184,7 +190,7 @@ class DirectCastService : Service() {
             bufferingWarningIssued = false
             val snapshot = current
             val position = snapshot.position + if (snapshot.playing) SystemClock.elapsedRealtime() - snapshot.positionUpdatedAt else 0
-            connection?.load(mediaUrl, mediaMime, title, position, subtitleUrl, !snapshot.connected || snapshot.playing, snapshot.duration, CastSubtitleAppearance.load(this))
+            connection?.load(mediaUrl, mediaMime, title, position, subtitleUrl, playbackRequested, snapshot.duration, CastSubtitleAppearance.load(this))
         }
     }
 
@@ -227,6 +233,9 @@ class DirectCastService : Service() {
     private fun receiveStatus(data: JSONObject) {
         if (!current.active) return
         val playing = data.optString("playerState")
+        // BUFFERING is a receiver state, not a pause request. Keep the intended
+        // autoplay behavior for a delayed conversion handoff or subtitle reload.
+        playbackRequested = CastSessionPolicy.playbackIntent(playing, playbackRequested, current.preparing)
         val idle = data.optString("idleReason")
         if (idle == "ERROR") { failure("The receiver cannot play this file. Tap Convert to prepare compatible audio, or use VLC casting."); return }
         if (playing == "IDLE") {
@@ -309,6 +318,9 @@ class DirectCastService : Service() {
 
     private fun failure(message: String) {
         Log.w("VLCPlus/Cast", message)
+        // A failed conversion/LOAD must not leave the receiver app attempting to
+        // play an orphaned local HTTP URL after this service shuts down.
+        runCatching { connection?.command("STOP") }
         update { current.copy(active = false, connected = false, preparing = false, message = message, error = message) }
         stopSelf()
     }
@@ -316,6 +328,8 @@ class DirectCastService : Service() {
     override fun onDestroy() {
         synchronized(resources) {
             destroyed = true
+            // End the receiver's media session before its HTTP stream disappears.
+            runCatching { connection?.command("STOP") }
             connection?.close(); server?.close()
             CastPreparedCache.remember(preparedOutput)
             preparedOutput = null
