@@ -1,7 +1,7 @@
 # VLC Plus direct casting test
 
-Open a local video and tap its Cast button. Choose an SRT or WebVTT subtitle
-file if desired, then choose the TV or Chromecast. The controller offers
+Open a local video and tap its Cast button. Choose **Subtitle → Extract from movie** to select an embedded text track,
+or choose an external SRT or WebVTT file. Then choose the TV or Chromecast. The controller offers
 pause/resume, a seek slider, and 15-second jumps. Casting continues through a
 foreground service when the control screen is closed or the phone screen is off.
 
@@ -28,8 +28,12 @@ directory. **Choose using Files** opens the system picker, with a folder hint
 when available. File selection/read errors are visible. Conversion and subtitle
 controls remain usable after playback starts; volume controls address the receiver.
 
-Limits: local files only; external SRT/WebVTT only; embedded, ASS and bitmap
-subtitles are not extracted by this path. Standard mono/stereo/5.1/7.1 PCM layouts
+Limitations: local files only. Device-supported embedded text tracks, including
+SubRip and some ASS/SSA or timed-text formats, can be converted into a WebVTT
+track using Android's media extractor; support varies by Android version and
+container. PGS and VobSub bitmap subtitles are not supported. If your Android
+device does not expose the track, choose an external SRT or WebVTT subtitle.
+No subtitle is burned into the video or uploaded to the internet. Standard mono/stereo/5.1/7.1 PCM layouts
 are accepted for downmixing. This build must be tested on real receivers before
 claiming that it matches XPlayer or fixes the original VLC slowdown.
 
@@ -71,3 +75,13 @@ Original video samples, frame timing and full-file seeking are preserved.
 The app caches the most recent eligible completed conversion, up to 8 GiB, and
 reuses it when the source file is unchanged. The prepared file moves into the
 cache after casting stops. Clearing the app cache removes it.
+
+
+## Combined pre-release validation
+
+This branch combines receiver session/autoplay recovery with embedded subtitle
+selection. It also adds a synthetic Matroska video containing an actual embedded
+English SubRip track, exercised in the Android instrumentation suite.
+The signed .10 release does NOT yet include these features. Real-device TV
+casting, subtitle appearance, and long 4K audio conversion still require
+verification before releasing a signed update.
