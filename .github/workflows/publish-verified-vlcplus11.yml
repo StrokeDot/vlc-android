@@ -1,0 +1,52 @@
+name: Publish verified VLC Plus 11
+on:
+  push:
+    branches: [vlcplus/cast-recovery-embedded-subtitles]
+    paths:
+      - .github/workflows/publish-verified-vlcplus11.yml
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish-verified:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check signed artifact from completed Android validation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          TAG=vlcplus-3070209
+          if gh release view "$TAG" --repo "$GH_REPO" >/dev/null 2>&1; then
+            echo "Release $TAG already published"
+            exit 0
+          fi
+          mkdir -p signed-release
+          # Source run passed APK signature verification and all 18 Android 16 tests.
+          gh run download 42380405403 --repo "$GH_REPO" \
+            --name VLC-Plus-signed-arm64 --dir signed-release
+          cd signed-release
+          ls -lh
+          test "$(find . -maxdepth 1 -name '*.apk' | wc -l)" -eq 1
+          test "$(find . -maxdepth 1 -name '*.sha256' | wc -l)" -eq 1
+          sha256sum -c -- *.sha256
+      - name: Publish to GitHub Releases for the in-app updater
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          TAG=vlcplus-3070209
+          if gh release view "$TAG" --repo "$GH_REPO" >/dev/null 2>&1; then
+            echo "Release $TAG already published"
+            exit 0
+          fi
+          gh release create "$TAG" signed-release/* \
+            --repo "$GH_REPO" \
+            --target "$GITHUB_SHA" \
+            --title "VLC Plus 3.7.2-vlcplus.11" \
+            --notes "VLC Plus .11: restores TV casting after stalled sessions, fixes audio conversion handoff and cancellation, returns to the stable VLC AAC route, and adds Subtitle > Extract from movie for embedded MKV text subtitles (SRT, ASS/SSA, WebVTT). Signed using the existing VLC Plus release key. Automated Android 16 suite: 18 tests passed. Real 4K movie and TV playback still require device verification. Includes SHA-256 checksum. Independent app, not affiliated with VideoLAN."
