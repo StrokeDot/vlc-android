@@ -27,6 +27,12 @@ public final class CastCoreTest {
         check(CastSessionPolicy.media("","",false,false)==CastSessionPolicy.IGNORE);
         check(CastSessionPolicy.media("IDLE","ERROR",true,true)==CastSessionPolicy.ERROR);
         check(CastSessionPolicy.media("PLAYING","",true,false)==CastSessionPolicy.UPDATE);
+        check(CastSessionPolicy.playbackIntent("BUFFERING",true,false));
+        check(CastSessionPolicy.playbackIntent("BUFFERING",false,false)==false);
+        check(CastSessionPolicy.playbackIntent("PAUSED",true,false)==false);
+        check(CastSessionPolicy.playbackIntent("PAUSED",true,true));
+        check(CastSessionPolicy.playbackIntent("PLAYING",false,false));
+        check(CastSessionPolicy.playbackIntent("IDLE",true,false));
         check(!CastSessionPolicy.belongsToLoad("new","other",false,-1,1));
         check(!CastSessionPolicy.belongsToLoad("same","same",false,5,5));
         check(CastSessionPolicy.belongsToLoad("same","same",true,5,5));
