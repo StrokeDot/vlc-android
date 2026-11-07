@@ -1,7 +1,7 @@
 # VLC Plus direct casting test
 
-Open a local video and tap its Cast button. Choose an SRT or WebVTT subtitle
-file if desired, then choose the TV or Chromecast. The controller offers
+Open a local video and tap its Cast button. Choose **Subtitle → Extract from movie** to select a compatible embedded text
+track, or choose an external SRT or WebVTT file. Then choose the TV or Chromecast. The controller offers
 pause/resume, a seek slider, and 15-second jumps. Casting continues through a
 foreground service when the control screen is closed or the phone screen is off.
 
@@ -28,8 +28,13 @@ directory. **Choose using Files** opens the system picker, with a folder hint
 when available. File selection/read errors are visible. Conversion and subtitle
 controls remain usable after playback starts; volume controls address the receiver.
 
-Limits: local files only; external SRT/WebVTT only; embedded, ASS and bitmap
-subtitles are not extracted by this path. Standard mono/stereo/5.1/7.1 PCM layouts
+Embedded text subtitles supported by Android's media extractor (such as SRT,
+ASS/SSA and timed text, depending on device and container) are converted to a
+WebVTT text track for the receiver without re-encoding the movie. The extraction
+reads subtitle samples only, but very large subtitle tracks can still take time.
+If Android cannot expose the embedded track, choose an external SRT/WebVTT file.
+Bitmap subtitle formats such as PGS and VobSub are not supported; no image
+subtitle burn-in is performed. Local media only. Standard mono/stereo/5.1/7.1 PCM layouts
 are accepted for downmixing. This build must be tested on real receivers before
 claiming that it matches XPlayer or fixes the original VLC slowdown.
 
