@@ -6,6 +6,9 @@ on:
     # the first signed APK. Subsequent releases use versioned tags / dispatch.
     branches: [vlcplus/first-signed-release]
     tags: [vlcplus-*]
+concurrency:
+  group: vlcplus-signed-${{ github.ref }}
+  cancel-in-progress: true
 permissions:
   contents: write
 

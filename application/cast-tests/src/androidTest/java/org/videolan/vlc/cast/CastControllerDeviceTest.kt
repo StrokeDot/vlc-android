@@ -82,8 +82,8 @@ class CastControllerDeviceTest {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         context.getSharedPreferences("cast_subtitle_style", 0).edit().clear().commit()
         ActivityScenario.launch(ControllerPreviewActivity::class.java).use { scenario ->
+            var applied = 0
             scenario.onActivity { activity ->
-                var applied = 0
                 var dialog = CastSubtitleAppearance.show(activity) { applied++ }
                 dialog.window!!.decorView.findViewWithTag<android.widget.Spinner>("cast_style_font").setSelection(2)
                 dialog.getButton(android.app.AlertDialog.BUTTON_NEGATIVE).performClick()
@@ -96,6 +96,9 @@ class CastControllerDeviceTest {
                 root.findViewWithTag<android.widget.CheckBox>("cast_style_bold").isChecked = true
                 assertTrue(root.findViewWithTag<android.view.View>("cast_style_preview").isShown)
                 dialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick()
+            }
+            InstrumentationRegistry.getInstrumentation().waitForIdleSync()
+            scenario.onActivity { activity ->
                 val style = CastSubtitleAppearance.load(activity)
                 assertEquals(1, applied); assertEquals(1, style.family); assertEquals(1, style.color)
                 assertEquals(1.5, style.scale, 0.001); assertTrue(style.bold)
