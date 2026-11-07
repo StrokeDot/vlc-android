@@ -28,10 +28,11 @@ directory. **Choose using Files** opens the system picker, with a folder hint
 when available. File selection/read errors are visible. Conversion and subtitle
 controls remain usable after playback starts; volume controls address the receiver.
 
-Limitations: local files only. Device-supported embedded text tracks, including
-SubRip and some ASS/SSA or timed-text formats, can be converted into a WebVTT
-track using Android's media extractor; support varies by Android version and
-container. PGS and VobSub bitmap subtitles are not supported. If your Android
+Limitations: local files only. Matroska embedded SubRip, ASS/SSA and WebVTT text tracks are read
+directly from seekable MKV files, preserving track timestamps and durations
+without rewriting the movie. The fallback Android media extractor handles
+other compatible local video containers and timed-text formats, subject to
+platform support. PGS and VobSub bitmap subtitles are not supported. If your Android
 device does not expose the track, choose an external SRT or WebVTT subtitle.
 No subtitle is burned into the video or uploaded to the internet. Standard mono/stereo/5.1/7.1 PCM layouts
 are accepted for downmixing. This build must be tested on real receivers before
