@@ -47,12 +47,18 @@ internal object CastPipelinedPreparation {
             writer.get(); check()
             return prepared
         } finally {
-            // Do not Future.cancel(): a queued task must execute its finally/latch.
-            aborted.set(true); executor.shutdown()
+            // An interrupted conversion must not occupy the phone indefinitely.
+            // Interrupt the active native worker; wait for its finally block,
+            // but bound cleanup when an Android/native extractor never returns.
+            aborted.set(true); executor.shutdownNow()
             var interrupted = false
-            while (true) {
-                try { closed.await(); break } catch (_: InterruptedException) { interrupted = true }
+            val finished = try {
+                closed.await(10, java.util.concurrent.TimeUnit.SECONDS)
+            } catch (_: InterruptedException) {
+                interrupted = true
+                false
             }
+            if (!finished) Log.w("VLCPlus/CastPerf", "Audio conversion worker did not exit promptly after cancellation")
             runCatching { audio?.release() }; runCatching { source?.close() }
             stream.delete()
             if (interrupted) Thread.currentThread().interrupt()
