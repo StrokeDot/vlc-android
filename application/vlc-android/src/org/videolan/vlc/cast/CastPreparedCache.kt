@@ -8,7 +8,7 @@ import android.util.Log
 import java.io.File
 import java.security.MessageDigest
 
-/** One completed conversion. Hard links give active sessions their own lifetime without copying. */
+/** One completed conversion, moved between the cache and the active cast directory. */
 internal object CastPreparedCache {
     private const val MAX_BYTES = 8L * 1024 * 1024 * 1024
 
@@ -28,32 +28,33 @@ internal object CastPreparedCache {
         val saved = File(cache, "$key.mp4")
         val sessionFile = File(directory, "cached-audio.mp4")
         val reused = synchronized(this) {
-            if (saved.isFile && saved.length() > 0 && link(saved, sessionFile)) true
-            else {
-                if (saved.isFile && saved.length() == 0L) saved.delete()
-                cache.listFiles()?.filter { it.name != saved.name }?.forEach { it.delete() }
-                false
-            }
+            val hit = saved.isFile && saved.length() > 0 && saved.renameTo(sessionFile)
+            cache.listFiles()?.forEach { if (it != saved || it.length() == 0L) it.delete() }
+            hit
         }
         if (reused) {
             Log.i("VLCPlus/CastPerf", "path=prepared-cache-hit")
             progress("Using prepared audio…")
             check()
-            return CastPreparation.Prepared(sessionFile, "video/mp4")
+            return CastPreparation.Prepared(sessionFile, "video/mp4", saved)
         }
         val prepared = prepare()
         check()
-        if (prepared.mime == "video/mp4" && prepared.file.length() in 1..MAX_BYTES && fingerprint(source) == key) {
-            synchronized(this) {
-                if ((cache.isDirectory || cache.mkdirs()) && !saved.exists() && link(prepared.file, saved)) {
-                    cache.listFiles()?.filter { it.name != saved.name }?.forEach { it.delete() }
-                }
-            }
+        return if (prepared.mime == "video/mp4" && prepared.file.length() in 1..MAX_BYTES && fingerprint(source) == key) {
+            prepared.copy(cacheSlot = saved)
+        } else {
+            prepared
         }
-        return prepared
     }
 
-    private fun link(from: File, to: File): Boolean = runCatching { Os.link(from.path, to.path) }.isSuccess
+    /** Call only after the file server has closed, before deleting the session directory. */
+    @Synchronized fun remember(prepared: CastPreparation.Prepared?) {
+        val slot = prepared?.cacheSlot ?: return
+        val cache = requireNotNull(slot.parentFile)
+        if ((cache.isDirectory || cache.mkdirs()) && prepared.file.renameTo(slot)) {
+            cache.listFiles()?.forEach { if (it != slot) it.delete() }
+        }
+    }
 
     private fun fingerprint(source: File): String? = runCatching {
         val file = source.canonicalFile

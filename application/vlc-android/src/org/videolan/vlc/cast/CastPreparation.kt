@@ -12,7 +12,7 @@ import java.nio.ByteOrder
 /** Prepare a finished, seekable MP4 when needed. Video is always sample-copied. */
 @TargetApi(21)
 internal object CastPreparation {
-    data class Prepared(val file: File, val mime: String)
+    data class Prepared(val file: File, val mime: String, val cacheSlot: File? = null)
     class AudioUnsupported(val input: File, cause: Throwable? = null) : Exception("Android could not read or convert this audio", cause)
 
     fun prepare(context: Context, uri: Uri, directory: File, convertAudio: Boolean,

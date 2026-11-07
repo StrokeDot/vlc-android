@@ -246,22 +246,27 @@ class CastPreparationDeviceTest {
             val movie = File(root, "movie.mkv").apply { writeText("original") }
             val cache = File(root, "cache")
             var preparations = 0
-            fun convert(session: String): File {
+            fun convert(session: String): CastPreparation.Prepared {
                 val folder = File(root, session).apply { mkdirs() }
                 return CastPreparedCache.getOrPrepare(cache, movie, folder, {}, {}) {
                     val output = File(folder, "prepared.mp4").apply { writeText("conversion ${++preparations}") }
                     CastPreparation.Prepared(output, "video/mp4")
-                }.file
+                }
             }
             val first = convert("first")
-            assertTrue(first.delete())
+            CastPreparedCache.remember(first)
+            assertFalse(first.file.exists())
             val reused = convert("second")
             assertEquals(1, preparations)
-            assertEquals("conversion 1", reused.readText())
+            assertEquals("conversion 1", reused.file.readText())
+            CastPreparedCache.remember(reused)
             movie.appendText(" changed")
-            assertEquals("conversion 2", convert("third").readText())
+            val changed = convert("third")
+            assertEquals("conversion 2", changed.file.readText())
+            CastPreparedCache.remember(changed)
             assertEquals(1, cache.listFiles()!!.size)
-            assertEquals("conversion 1", reused.readText())
+            assertEquals("conversion 2", convert("fourth").file.readText())
+            assertEquals(2, preparations)
         } finally { root.deleteRecursively() }
     }
 

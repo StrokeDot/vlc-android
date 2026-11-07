@@ -69,5 +69,5 @@ path if there is insufficient space or the Android encoder is unavailable.
 Original video samples, frame timing and full-file seeking are preserved.
 
 The app caches the most recent eligible completed conversion, up to 8 GiB, and
-reuses it when the source file is unchanged. This uses a hard link to the prepared
-file rather than writing another copy. Clearing the app cache removes it.
+reuses it when the source file is unchanged. The prepared file moves into the
+cache after casting stops. Clearing the app cache removes it.

@@ -40,6 +40,7 @@ class DirectCastService : Service() {
     private var conversionJob: Job? = null
     private val retiredServers = mutableListOf<Pair<CastFileServer, File?>>()
     private var preparedFolder: File? = null
+    private var preparedOutput: CastPreparation.Prepared? = null
     private var server: CastFileServer? = null
     private var connection: CastConnection? = null
     private var wake: PowerManager.WakeLock? = null
@@ -124,6 +125,7 @@ class DirectCastService : Service() {
                         synchronized(resources) {
                             if (destroyed || !ctx.isActive) { http.close(); client.close(); return@launch }
                             server = http; connection = client
+                            preparedOutput = prepared
                             mediaUrl = http.mediaUrl(); mediaMime = mime; subtitleUrl = captions
                             update { current.copy(preparing = false, message = "Connecting to $device…", subtitle = captions != null) }
                             client.start()
@@ -197,6 +199,7 @@ class DirectCastService : Service() {
                     if (destroyed || !ctx.isActive || !current.active) return@launch
                     val captions = subtitleText?.let { http.setSubtitles(it) }
                     server?.let { retiredServers.add(it to preparedFolder) }; server = http; preparedFolder = folder
+                    preparedOutput = prepared
                     candidate = null; retained = true
                     mediaUrl = http.mediaUrl(); mediaMime = prepared.mime; subtitleUrl = captions
                     val now = SystemClock.elapsedRealtime()
@@ -270,6 +273,8 @@ class DirectCastService : Service() {
         synchronized(resources) {
             destroyed = true
             connection?.close(); server?.close()
+            CastPreparedCache.remember(preparedOutput)
+            preparedOutput = null
             retiredServers.forEach { (http, folder) -> http.close(); folder?.deleteRecursively() }; retiredServers.clear()
             if (wake?.isHeld == true) wake?.release()
             if (wifi?.isHeld == true) wifi?.release()
