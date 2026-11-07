@@ -140,7 +140,7 @@ class CastPreparationDeviceTest {
             output.copyTo(File(context.getExternalFilesDir(null), "cast-dolby-output.mp4"), overwrite = true)
             assertSameVideo(input, output)
             assertTrue(CastVideoValidation.matches(input, output, {}))
-            assertEquals("Expected platform AAC output", "platform-aac.mp4", output.name)
+            assertEquals("Expected stable VLC AAC output", "pipelined.mp4", output.name)
             val audio = samples(output, "audio/")
             assertEquals("audio/mp4a-latm", audio.mime)
             assertTrue("Converted audio must contain an audible signal", decoded(output, "audio/").peak > 256)
@@ -181,7 +181,7 @@ class CastPreparationDeviceTest {
             instrumentation.context.assets.open("cast-dolby.mkv").use { source -> input.outputStream().use { source.copyTo(it) } }
             try {
                 CastAudioPreparation.prepare(context, Uri.fromFile(input), folder, {
-                    if (File(folder, "platform-aac.mp4").exists()) throw java.util.concurrent.CancellationException("Cancel fixture")
+                    if (File(folder, "pipelined.mp4").exists()) throw java.util.concurrent.CancellationException("Cancel fixture")
                 }, {})
                 fail("Preparation must propagate cancellation")
             } catch (_: java.util.concurrent.CancellationException) { }
