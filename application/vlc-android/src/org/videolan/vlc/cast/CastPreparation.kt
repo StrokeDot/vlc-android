@@ -5,6 +5,9 @@ import android.annotation.TargetApi
 import android.content.Context
 import android.media.*
 import android.net.Uri
+import android.os.SystemClock
+import android.provider.OpenableColumns
+import android.util.Log
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -21,13 +24,35 @@ internal object CastPreparation {
         val input = when (local.scheme) {
             "file", null -> File(requireNotNull(local.path))
             "content" -> File(directory, "source").also { file ->
-                progress("Reading video…")
+                val started = SystemClock.elapsedRealtime()
+                val size = runCatching {
+                    context.contentResolver.query(local, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { cursor ->
+                        if (cursor.moveToFirst() && !cursor.isNull(0)) cursor.getLong(0).takeIf { it > 0 } else null
+                    }
+                }.getOrNull()
+                progress("Reading video from storage…")
+                var copied = 0L
+                var lastProgress = started
                 context.contentResolver.openInputStream(local)?.use { source ->
                     file.outputStream().use { output ->
                         val buffer = ByteArray(256 * 1024)
-                        while (true) { check(); val n = source.read(buffer); if (n < 0) break; output.write(buffer, 0, n) }
+                        while (true) {
+                            check()
+                            val n = source.read(buffer)
+                            if (n < 0) break
+                            output.write(buffer, 0, n)
+                            copied += n
+                            val now = SystemClock.elapsedRealtime()
+                            if (now - lastProgress >= 1000) {
+                                val detail = if (size != null) "${(copied * 100 / size).coerceIn(0, 99)}%"
+                                    else "${copied / (1024 * 1024)} MiB"
+                                progress("Reading video from storage… $detail")
+                                lastProgress = now
+                            }
+                        }
                     }
                 } ?: error("The video cannot be opened")
+                Log.i("VLCPlus/CastPerf", "stage=source-staging bytes=$copied elapsedMs=${SystemClock.elapsedRealtime() - started}")
             }
             else -> error("Direct casting needs a local video. Use VLC casting for this network stream.")
         }
