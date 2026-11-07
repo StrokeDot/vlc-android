@@ -8,6 +8,13 @@ public final class CastSessionPolicy {
     public static boolean belongsToLoad(String expectedUrl,String reportedUrl,boolean responseForLoad,long previousSession,long incomingSession) {
         return responseForLoad || (expectedUrl.equals(reportedUrl) && (previousSession<0 || previousSession!=incomingSession));
     }
+    /** Preserve play intent during BUFFERING; remote PAUSED is not the same state. */
+    public static boolean playbackIntent(String reportedState, boolean requested, boolean preparing) {
+        if(preparing)return requested;
+        if("PLAYING".equals(reportedState))return true;
+        if("PAUSED".equals(reportedState))return false;
+        return requested;
+    }
     public static int receiverGone(boolean established,boolean launching) {
         return established?END:(launching?IGNORE:LAUNCH);
     }
