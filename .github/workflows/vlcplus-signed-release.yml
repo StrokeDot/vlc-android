@@ -141,7 +141,7 @@ jobs:
           retention-days: 30
 
   publish:
-    if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/vlcplus/first-signed-release'
+    if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/vlcplus/first-signed-release' || github.ref == 'refs/heads/vlcplus/cast-recovery-embedded-subtitles'
     needs: [build-signed, codec-fixtures]
     runs-on: ubuntu-latest
     permissions:
@@ -171,4 +171,4 @@ jobs:
           gh release create "$TAG" signed-release/* \
             --target "$GITHUB_SHA" \
             --title "VLC Plus $TAG" \
-            --notes "Independent signed VLC Plus Android release. ARM64 APK; includes SHA-256 checksum. Not affiliated with VideoLAN. Signed APKs can update prior VLC Plus installs made with the same signing key."
+            --notes "VLC Plus .11: fixes TV casting session recovery and audio-conversion handoff; restores the stable VLC AAC conversion route; adds embedded MKV text-subtitle extraction (SRT, ASS/SSA, WebVTT) for casting. Includes SHA-256 checksum. Passed automated Android 16 tests; real TV and full-length 4K playback remain to be verified. Independent release, not affiliated with VideoLAN. Signed APK supports in-place updates from prior VLC Plus installs."
