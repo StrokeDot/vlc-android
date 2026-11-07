@@ -1,7 +1,7 @@
 name: Direct Cast protocol and streaming tests
 on:
   push:
-    branches: [vlcplus/direct-cast-subtitles, vlcplus/cast-controls-v7]
+    branches: [vlcplus/direct-cast-subtitles, vlcplus/cast-controls-v7, vlcplus/tv-buffering-diagnostics]
   pull_request:
 jobs:
   core:

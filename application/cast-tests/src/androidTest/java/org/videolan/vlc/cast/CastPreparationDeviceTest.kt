@@ -140,7 +140,7 @@ class CastPreparationDeviceTest {
             output.copyTo(File(context.getExternalFilesDir(null), "cast-dolby-output.mp4"), overwrite = true)
             assertSameVideo(input, output)
             assertTrue(CastVideoValidation.matches(input, output, {}))
-            assertEquals("Expected platform AAC output", "platform-aac.mp4", output.name)
+            assertEquals("Expected stable VLC AAC output", "pipelined.mp4", output.name)
             val audio = samples(output, "audio/")
             assertEquals("audio/mp4a-latm", audio.mime)
             assertTrue("Converted audio must contain an audible signal", decoded(output, "audio/").peak > 256)
@@ -181,7 +181,7 @@ class CastPreparationDeviceTest {
             instrumentation.context.assets.open("cast-dolby.mkv").use { source -> input.outputStream().use { source.copyTo(it) } }
             try {
                 CastAudioPreparation.prepare(context, Uri.fromFile(input), folder, {
-                    if (File(folder, "platform-aac.mp4").exists()) throw java.util.concurrent.CancellationException("Cancel fixture")
+                    if (File(folder, "pipelined.mp4").exists()) throw java.util.concurrent.CancellationException("Cancel fixture")
                 }, {})
                 fail("Preparation must propagate cancellation")
             } catch (_: java.util.concurrent.CancellationException) { }
@@ -280,14 +280,14 @@ class CastPreparationDeviceTest {
             val legacy = File(folder, "legacy").apply { mkdirs() }
             val fast = File(folder, "fast").apply { mkdirs() }
             val started = android.os.SystemClock.elapsedRealtime()
-            val old = CastPipelinedPreparation.prepare(context, input, legacy, {}, {}).file
-            val oldDuration = android.os.SystemClock.elapsedRealtime() - started
+            val experimental = CastPipelinedPreparation.prepare(context, input, legacy, {}, {}, platformEncoder = true).file
+            val experimentalDuration = android.os.SystemClock.elapsedRealtime() - started
             val begin = android.os.SystemClock.elapsedRealtime()
             val output = CastAudioPreparation.prepare(context, Uri.fromFile(input), fast, {}, {}).file
-            val newDuration = android.os.SystemClock.elapsedRealtime() - begin
-            android.util.Log.i("VLCPlus/CastPerf", "fixture=120s-60fps baselineVersion=9 baselineMs=$oldDuration platformMs=$newDuration inputBytes=${input.length()}")
-            assertEquals("platform-aac.mp4", output.name)
-            assertTrue(CastVideoValidation.matches(input, old, {}))
+            val stableDuration = android.os.SystemClock.elapsedRealtime() - begin
+            android.util.Log.i("VLCPlus/CastPerf", "fixture=120s-60fps pcmExperimentalMs=$experimentalDuration stableVlcAacMs=$stableDuration inputBytes=${input.length()}")
+            assertEquals("pipelined.mp4", output.name)
+            assertTrue(CastVideoValidation.matches(input, experimental, {}))
             assertTrue(CastVideoValidation.matches(input, output, {}))
             assertTrue(decoded(output, "audio/").peak > 256)
             val completeAudio = samples(output, "audio/")
