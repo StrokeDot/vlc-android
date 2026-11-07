@@ -117,9 +117,11 @@ public final class CastCoreTest {
             HttpURLConnection c=request(server.mediaUrl(),"HEAD",null);
             check(c.getResponseCode()==200&&c.getContentLengthLong()==large.length());
             check(opens[0]==0);c.disconnect();
+            check(server.mediaHeadCount()==1 && server.mediaGetCount()==0);
             c=request(server.mediaUrl(),"GET","bytes=1024-1026");
             check(c.getResponseCode()==206&&Arrays.equals(c.getInputStream().readAllBytes(),new byte[]{42,43,44}));
             check(opens[0]==1);c.disconnect();
+            check(server.mediaGetCount()==1 && server.mediaBytesServed()==3);
         }
 
         File media = File.createTempFile("cast-core", ".mp4");
