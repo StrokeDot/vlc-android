@@ -42,6 +42,12 @@ internal object CastEmbeddedSubtitles {
         else -> "WebVTT"
     }
     fun tracks(context: Context, movie: Uri): List<Track> {
+        // For Matroska use original EBML block durations; device MediaExtractor
+        // often omits MKV text tracks entirely.
+        val matroska = runCatching { CastMatroskaText.tracks(context, movie) }.getOrNull()
+        if (!matroska.isNullOrEmpty()) {
+            return matroska.map { Track(-it.number, it.language, it.format) }
+        }
         val demux = extractor(context, movie)
         return try {
             (0 until demux.trackCount).mapNotNull { index ->
@@ -55,6 +61,7 @@ internal object CastEmbeddedSubtitles {
 
     /** Full WebVTT document, ready for the existing local Cast HTTP server. */
     fun extract(context: Context, movie: Uri, track: Int): String {
+        if (track < 0) return CastMatroskaText.extract(context, movie, -track)
         val demux = extractor(context, movie)
         try {
             require(track in 0 until demux.trackCount) { "That subtitle track no longer exists" }
