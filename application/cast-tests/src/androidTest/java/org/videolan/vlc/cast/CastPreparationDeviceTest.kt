@@ -140,7 +140,7 @@ class CastPreparationDeviceTest {
             output.copyTo(File(context.getExternalFilesDir(null), "cast-dolby-output.mp4"), overwrite = true)
             assertSameVideo(input, output)
             assertTrue(CastVideoValidation.matches(input, output, {}))
-            assertEquals("Expected one-pass output", "pipelined.mp4", output.name)
+            assertEquals("Expected platform AAC output", "platform-aac.mp4", output.name)
             val audio = samples(output, "audio/")
             assertEquals("audio/mp4a-latm", audio.mime)
             assertTrue("Converted audio must contain an audible signal", decoded(output, "audio/").peak > 256)
@@ -161,7 +161,7 @@ class CastPreparationDeviceTest {
         try {
             val input = File(folder, name)
             instrumentation.context.assets.open(name).use { source -> input.outputStream().use { source.copyTo(it) } }
-            val output = CastAudioPreparation.prepare(context, Uri.fromFile(input), folder, {}, {}).file
+            val output = CastPipelinedPreparation.prepare(context, input, folder, {}, {}, platformEncoder = true).file
             output.copyTo(File(context.getExternalFilesDir(null), name.removeSuffix(".mkv") + "-output.mp4"), overwrite = true)
             assertTrue(CastVideoValidation.matches(input, output, {}))
             assertSameVideo(input, output)
@@ -181,7 +181,7 @@ class CastPreparationDeviceTest {
             instrumentation.context.assets.open("cast-dolby.mkv").use { source -> input.outputStream().use { source.copyTo(it) } }
             try {
                 CastAudioPreparation.prepare(context, Uri.fromFile(input), folder, {
-                    if (File(folder, "pipelined.mp4").exists()) throw java.util.concurrent.CancellationException("Cancel fixture")
+                    if (File(folder, "platform-aac.mp4").exists()) throw java.util.concurrent.CancellationException("Cancel fixture")
                 }, {})
                 fail("Preparation must propagate cancellation")
             } catch (_: java.util.concurrent.CancellationException) { }
@@ -239,6 +239,37 @@ class CastPreparationDeviceTest {
         } finally { folder.deleteRecursively() }
     }
 
+    @Test fun completedPreparationIsReusedAndInvalidatedWhenSourceChanges() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val root = File(context.cacheDir, "prepared-cache-test-${System.nanoTime()}").apply { mkdirs() }
+        try {
+            val movie = File(root, "movie.mkv").apply { writeText("original") }
+            val cache = File(root, "cache")
+            var preparations = 0
+            fun convert(session: String): CastPreparation.Prepared {
+                val folder = File(root, session).apply { mkdirs() }
+                return CastPreparedCache.getOrPrepare(cache, movie, folder, {}, {}) {
+                    val output = File(folder, "prepared.mp4").apply { writeText("conversion ${++preparations}") }
+                    CastPreparation.Prepared(output, "video/mp4")
+                }
+            }
+            val first = convert("first")
+            CastPreparedCache.remember(first)
+            assertFalse(first.file.exists())
+            val reused = convert("second")
+            assertEquals(1, preparations)
+            assertEquals("conversion 1", reused.file.readText())
+            CastPreparedCache.remember(reused)
+            movie.appendText(" changed")
+            val changed = convert("third")
+            assertEquals("conversion 2", changed.file.readText())
+            CastPreparedCache.remember(changed)
+            assertEquals(1, cache.listFiles()!!.size)
+            assertEquals("conversion 2", convert("fourth").file.readText())
+            assertEquals(2, preparations)
+        } finally { root.deleteRecursively() }
+    }
+
     @Test fun compareTwoMinutePreparationPaths() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val context = instrumentation.targetContext
@@ -249,20 +280,13 @@ class CastPreparationDeviceTest {
             val legacy = File(folder, "legacy").apply { mkdirs() }
             val fast = File(folder, "fast").apply { mkdirs() }
             val started = android.os.SystemClock.elapsedRealtime()
-            val old = CastPipelinedPreparation.prepare(context, input, legacy, {}, {}, fastAudio = false).file
+            val old = CastPipelinedPreparation.prepare(context, input, legacy, {}, {}).file
             val oldDuration = android.os.SystemClock.elapsedRealtime() - started
             val begin = android.os.SystemClock.elapsedRealtime()
-            val maxAudioBytes = java.util.concurrent.atomic.AtomicLong(0)
-            val muxAudioBytes = java.util.concurrent.atomic.AtomicLong(-1)
-            val output = CastAudioPreparation.prepare(context, Uri.fromFile(input), fast, {
-                val bytes = File(fast, "audio-stream.ts").length()
-                maxAudioBytes.updateAndGet { maxOf(it, bytes) }
-                if (File(fast, "pipelined.mp4").length() > 0) muxAudioBytes.compareAndSet(-1, bytes)
-            }, {}).file
+            val output = CastAudioPreparation.prepare(context, Uri.fromFile(input), fast, {}, {}).file
             val newDuration = android.os.SystemClock.elapsedRealtime() - begin
-            android.util.Log.i("VLCPlus/CastPerf", "fixture=120s-60fps baselineVersion=8 baselineMs=$oldDuration combinedMs=$newDuration inputBytes=${input.length()}")
-            assertTrue("Video muxing must overlap audio encoding", muxAudioBytes.get() >= 0 && muxAudioBytes.get() < maxAudioBytes.get())
-            assertEquals("pipelined.mp4", output.name)
+            android.util.Log.i("VLCPlus/CastPerf", "fixture=120s-60fps baselineVersion=9 baselineMs=$oldDuration platformMs=$newDuration inputBytes=${input.length()}")
+            assertEquals("platform-aac.mp4", output.name)
             assertTrue(CastVideoValidation.matches(input, old, {}))
             assertTrue(CastVideoValidation.matches(input, output, {}))
             assertTrue(decoded(output, "audio/").peak > 256)

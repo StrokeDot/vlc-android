@@ -12,11 +12,11 @@ import java.nio.ByteOrder
 /** Prepare a finished, seekable MP4 when needed. Video is always sample-copied. */
 @TargetApi(21)
 internal object CastPreparation {
-    data class Prepared(val file: File, val mime: String)
+    data class Prepared(val file: File, val mime: String, val cacheSlot: File? = null)
     class AudioUnsupported(val input: File, cause: Throwable? = null) : Exception("Android could not read or convert this audio", cause)
 
     fun prepare(context: Context, uri: Uri, directory: File, convertAudio: Boolean,
-                check: () -> Unit, progress: (String) -> Unit): Prepared {
+                check: () -> Unit, progress: (String) -> Unit, pcmAudio: MediaExtractor? = null): Prepared {
         val local = CastMovieLocation.localFile(context, uri) ?: uri
         val input = when (local.scheme) {
             "file", null -> File(requireNotNull(local.path))
@@ -43,20 +43,21 @@ internal object CastPreparation {
         } finally { metadata.release() }
         if (!convertAudio && mime in listOf("video/mp4", "video/webm")) return Prepared(input, mime)
         require(directory.usableSpace > input.length() + 64L * 1024 * 1024) { "Not enough temporary storage to prepare this video" }
-        val output = File(directory, "prepared.mp4")
+        val output = File(directory, if (pcmAudio == null) "prepared.mp4" else "platform-aac.mp4")
         val probe = MediaExtractor()
         try {
             probe.setDataSource(input.path)
             val video = (0 until probe.trackCount).firstOrNull { probe.getTrackFormat(it).getString(MediaFormat.KEY_MIME)?.startsWith("video/") == true }
                 ?: error("No video track found")
-            val audio = (0 until probe.trackCount).firstOrNull { probe.getTrackFormat(it).getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true }
+            val audioSource = pcmAudio ?: probe
+            val audio = (0 until audioSource.trackCount).firstOrNull { audioSource.getTrackFormat(it).getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true }
             if (convertAudio && audio == null) throw AudioUnsupported(input)
             val videoMime = probe.getTrackFormat(video).getString(MediaFormat.KEY_MIME)
             require(videoMime in listOf("video/avc", "video/hevc", "video/mp4v-es")) { "This video format needs VLC casting" }
-            val audioMime = audio?.let { probe.getTrackFormat(it).getString(MediaFormat.KEY_MIME) }
+            val audioMime = audio?.let { audioSource.getTrackFormat(it).getString(MediaFormat.KEY_MIME) }
             if (audio != null && (convertAudio || audioMime != "audio/mp4a-latm")) {
                 progress("Preparing audio for TV… 0%")
-                try { convert(input, output, video, audio, rotation, check, progress) }
+                try { convert(input, output, video, audio, rotation, check, progress, pcmAudio) }
                 catch (e: java.util.concurrent.CancellationException) { throw e }
                 catch (e: Exception) { throw AudioUnsupported(input, e) }
             } else {
@@ -171,21 +172,46 @@ internal object CastPreparation {
     }
 
     private fun convert(input: File, output: File, videoTrack: Int, audioTrack: Int, rotation: Int,
-                        check: () -> Unit, progress: (String) -> Unit) {
-        val audio = MediaExtractor()
+                        check: () -> Unit, progress: (String) -> Unit, pcmAudio: MediaExtractor?) {
+        val audio = pcmAudio ?: MediaExtractor()
         val video = MediaExtractor()
         var decoder: MediaCodec? = null
         var encoder: MediaCodec? = null
         var muxer: MediaMuxer? = null
         var muxStarted = false
         try {
-            audio.setDataSource(input.path); audio.selectTrack(audioTrack)
+            if (pcmAudio == null) audio.setDataSource(input.path)
+            audio.selectTrack(audioTrack)
+            val audioOrigin = if (pcmAudio == null) 0L else audio.sampleTime.coerceAtLeast(0)
             video.setDataSource(input.path); video.selectTrack(videoTrack)
             val inputFormat = audio.getTrackFormat(audioTrack)
-            inputFormat.setInteger("pcm-encoding", AudioFormat.ENCODING_PCM_16BIT)
-            val dec = MediaCodec.createDecoderByType(requireNotNull(inputFormat.getString(MediaFormat.KEY_MIME)))
-            decoder = dec
-            dec.configure(inputFormat, null, null, 0); dec.start()
+            fun startEncoder(sampleRate: Int, channels: Int) {
+                val aac = MediaFormat.createAudioFormat("audio/mp4a-latm", sampleRate, channels.coerceAtMost(2))
+                aac.setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
+                aac.setInteger(MediaFormat.KEY_BIT_RATE, 192000)
+                aac.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 65536)
+                val codec = MediaCodec.createEncoderByType("audio/mp4a-latm")
+                encoder = codec
+                codec.configure(aac, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+                codec.start()
+            }
+            val dec = if (pcmAudio == null) {
+                inputFormat.setInteger("pcm-encoding", AudioFormat.ENCODING_PCM_16BIT)
+                MediaCodec.createDecoderByType(requireNotNull(inputFormat.getString(MediaFormat.KEY_MIME))).also {
+                    decoder = it
+                    it.configure(inputFormat, null, null, 0)
+                    it.start()
+                }
+            } else {
+                require(inputFormat.getString(MediaFormat.KEY_MIME) == "audio/raw" &&
+                    inputFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT) == 2 &&
+                    inputFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE) == 48000 &&
+                    (!inputFormat.containsKey("pcm-encoding") || inputFormat.getInteger("pcm-encoding") == AudioFormat.ENCODING_PCM_16BIT)) {
+                    "The intermediate audio is not 48 kHz stereo PCM"
+                }
+                startEncoder(48000, 2)
+                null
+            }
             val mux = MediaMuxer(output.path, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
             muxer = mux; mux.setOrientationHint(rotation)
             val videoFormat = video.getTrackFormat(videoTrack)
@@ -198,7 +224,8 @@ internal object CastPreparation {
                 while (video.sampleTime >= 0 && video.sampleTime <= time) {
                     check(); videoData.clear()
                     require(video.sampleFlags and MediaExtractor.SAMPLE_FLAG_ENCRYPTED == 0) { "Protected video cannot be prepared" }
-                    val size = video.readSampleData(videoData, 0); if (size < 0) break
+                    val size = video.readSampleData(videoData, 0)
+                    require(size >= 0) { "The video ended before its declared samples" }
                     videoInfo.set(0, size, video.sampleTime.coerceAtLeast(0), video.sampleFlags and MediaExtractor.SAMPLE_FLAG_SYNC)
                     mux.writeSampleData(muxVideo, videoData, videoInfo); video.advance()
                 }
@@ -218,23 +245,54 @@ internal object CastPreparation {
             var sampleRate = 0
             var reported = -1
             var lastProgressNs = System.nanoTime()
+            var pcmEndTime = 0L
             while (!encoderDone) {
                 check()
                 var advanced = false
                 if (!inputDone) {
-                    val index = dec.dequeueInputBuffer(0)
+                    val feeder = dec ?: requireNotNull(encoder)
+                    val index = feeder.dequeueInputBuffer(if (dec == null) 1000 else 0)
                     if (index >= 0) {
-                        val bytes = requireNotNull(dec.getInputBuffer(index)); bytes.clear()
-                        val size = audio.readSampleData(bytes, 0)
-                        if (size < 0) { dec.queueInputBuffer(index, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM); inputDone = true }
-                        else {
-                            require(audio.sampleFlags and MediaExtractor.SAMPLE_FLAG_ENCRYPTED == 0) { "Protected audio cannot be prepared" }
-                            dec.queueInputBuffer(index, 0, size, audio.sampleTime.coerceAtLeast(0), 0); audio.advance()
+                        val bytes = requireNotNull(feeder.getInputBuffer(index)); bytes.clear()
+                        if (dec == null) {
+                            val firstTime = audio.sampleTime
+                            var size = 0
+                            // PCM arrives in small packets. Batch adjacent packets without crossing a timestamp gap.
+                            while (audio.sampleTime >= 0) {
+                                val expectedTime = firstTime + size / 4L * 1_000_000L / 48000
+                                if (size > 0 && kotlin.math.abs(audio.sampleTime - expectedTime) > 1000L) break
+                                val packetSize = audio.sampleSize
+                                require(packetSize in 4..bytes.capacity().toLong() && packetSize % 4L == 0L) { "Invalid stereo PCM packet" }
+                                if (packetSize > bytes.capacity() - size) break
+                                bytes.clear()
+                                require(audio.readSampleData(bytes, size).toLong() == packetSize) { "Incomplete stereo PCM packet" }
+                                size += packetSize.toInt()
+                                audio.advance()
+                            }
+                            if (size == 0) {
+                                feeder.queueInputBuffer(index, 0, 0, pcmEndTime, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                                inputDone = true
+                                encoderEos = true
+                            } else {
+                                val time = (firstTime - audioOrigin).coerceAtLeast(0)
+                                feeder.queueInputBuffer(index, 0, size, time, 0)
+                                pcmEndTime = time + size / 4L * 1_000_000L / 48000
+                            }
+                        } else {
+                            val size = audio.readSampleData(bytes, 0)
+                            if (size < 0) {
+                                dec.queueInputBuffer(index, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                                inputDone = true
+                            } else {
+                                require(audio.sampleFlags and MediaExtractor.SAMPLE_FLAG_ENCRYPTED == 0) { "Protected audio cannot be prepared" }
+                                dec.queueInputBuffer(index, 0, size, audio.sampleTime.coerceAtLeast(0), 0)
+                                audio.advance()
+                            }
                         }
                         advanced = true
                     }
                 }
-                if (pendingIndex < 0 && !decoderDone) {
+                if (dec != null && pendingIndex < 0 && !decoderDone) {
                     val index = dec.dequeueOutputBuffer(decodedInfo, 0)
                     if (index == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                         require(encoder == null) { "The audio format changed during preparation" }
@@ -250,11 +308,7 @@ internal object CastPreparation {
                             val expected = if (channels == 6) AudioFormat.CHANNEL_OUT_5POINT1 else AudioFormat.CHANNEL_OUT_7POINT1_SURROUND
                             require(mask == 0 || mask == expected) { "This audio channel layout needs VLC casting" }
                         }
-                        val aac = MediaFormat.createAudioFormat("audio/mp4a-latm", sampleRate, channels.coerceAtMost(2))
-                        aac.setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
-                        aac.setInteger(MediaFormat.KEY_BIT_RATE, 192000)
-                        aac.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 65536)
-                        encoder = MediaCodec.createEncoderByType("audio/mp4a-latm").also { it.configure(aac, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE); it.start() }
+                        startEncoder(sampleRate, channels)
                         advanced = true
                     } else if (index >= 0) {
                         pendingEos = decodedInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0
@@ -270,16 +324,20 @@ internal object CastPreparation {
                 }
                 val enc = encoder
                 val source = pcm
-                if (pendingIndex >= 0 && enc != null && source != null) {
+                if (dec != null && pendingIndex >= 0 && enc != null && source != null) {
                     val index = enc.dequeueInputBuffer(0)
                     if (index >= 0) {
                         val bytes = requireNotNull(enc.getInputBuffer(index)); bytes.clear(); bytes.order(ByteOrder.LITTLE_ENDIAN)
                         val outChannels = channels.coerceAtMost(2)
                         val frames = minOf(source.remaining() / (channels * 2), bytes.remaining() / (outChannels * 2))
                         require(frames > 0) { "Invalid PCM audio buffer" }
-                        for (frame in 0 until frames) {
-                            if (channels <= 2) repeat(channels) { bytes.putShort(source.short) }
-                            else {
+                        if (channels <= 2) {
+                            val limit = source.limit()
+                            source.limit(source.position() + frames * channels * 2)
+                            bytes.put(source)
+                            source.limit(limit)
+                        } else {
+                            for (frame in 0 until frames) {
                                 var left = 0.0; var right = 0.0
                                 for (channel in 0 until channels) {
                                     val value = source.short.toInt()
@@ -305,7 +363,7 @@ internal object CastPreparation {
                     if (index >= 0) { enc.queueInputBuffer(index, 0, 0, pcmTime + pcmFrames * 1000000L / sampleRate, MediaCodec.BUFFER_FLAG_END_OF_STREAM); encoderEos = true; advanced = true }
                 }
                 if (enc != null) {
-                    var index = enc.dequeueOutputBuffer(encodedInfo, 0)
+                    var index = enc.dequeueOutputBuffer(encodedInfo, if (dec == null && inputDone) 1000 else 0)
                     if (index == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                         muxAudio = mux.addTrack(enc.outputFormat); mux.start(); muxStarted = true; advanced = true
                         index = enc.dequeueOutputBuffer(encodedInfo, 0)
@@ -326,14 +384,17 @@ internal object CastPreparation {
                     }
                 }
                 if (advanced) lastProgressNs = System.nanoTime()
-                else { require(System.nanoTime() - lastProgressNs < 30_000_000_000L) { "The audio codec stopped responding" }; Thread.sleep(2) }
+                else {
+                    require(System.nanoTime() - lastProgressNs < 30_000_000_000L) { "The audio codec stopped responding" }
+                    if (dec != null) Thread.sleep(2)
+                }
             }
             require(muxStarted) { "No audio could be converted" }
             copyVideoUntil(Long.MAX_VALUE)
         } finally {
             runCatching { decoder?.stop() }; runCatching { decoder?.release() }
             runCatching { encoder?.stop() }; runCatching { encoder?.release() }
-            try { if (muxStarted) muxer?.stop() } finally { muxer?.release(); audio.release(); video.release() }
+            try { if (muxStarted) muxer?.stop() } finally { muxer?.release(); if (pcmAudio == null) audio.release(); video.release() }
         }
     }
 }

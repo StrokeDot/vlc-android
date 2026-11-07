@@ -17,8 +17,9 @@ import java.util.concurrent.atomic.AtomicBoolean
 @TargetApi(23)
 internal object CastPipelinedPreparation {
     fun prepare(context: Context, input: File, directory: File, check: () -> Unit,
-                progress: (String) -> Unit, fastAudio: Boolean = true): CastPreparation.Prepared {
-        val stream = File(directory, "audio-stream.ts").apply { check(createNewFile()) }
+                progress: (String) -> Unit, fastAudio: Boolean = true, platformEncoder: Boolean = false): CastPreparation.Prepared {
+        require(!platformEncoder || android.os.Build.VERSION.SDK_INT >= 28)
+        val stream = File(directory, if (platformEncoder) "audio-pcm.mkv" else "audio-stream.ts").apply { check(createNewFile()) }
         val aborted = AtomicBoolean(false)
         val closed = CountDownLatch(1)
         val executor = Executors.newSingleThreadExecutor { task -> Thread(task, "VLCPlus-AAC").apply { isDaemon = true } }
@@ -27,7 +28,7 @@ internal object CastPipelinedPreparation {
             try {
                 CastNativePreparation.convert(context, input, stream, true, {
                     check(); if (aborted.get()) throw java.util.concurrent.CancellationException("Preparation stopped")
-                }, {}, fastAudio)
+                }, {}, fastAudio, pcm = platformEncoder)
             } finally { closed.countDown() }
         }
         var source: GrowingSource? = null
@@ -37,8 +38,12 @@ internal object CastPipelinedPreparation {
             val data = GrowingSource(stream, writer, aborted, check); source = data
             val extractor = MediaExtractor(); audio = extractor
             extractor.setDataSource(data)
-            Log.i("VLCPlus/CastPerf", "path=pipelined muxStartMs=${SystemClock.elapsedRealtime() - started} encoderComplete=${writer.isDone}")
-            val prepared = CastPreparation.withAudioStream(input, extractor, directory, check, progress)
+            Log.i("VLCPlus/CastPerf", "path=${if (platformEncoder) "platform-aac" else "pipelined"} muxStartMs=${SystemClock.elapsedRealtime() - started} encoderComplete=${writer.isDone}")
+            val prepared = if (platformEncoder) {
+                CastPreparation.prepare(context, android.net.Uri.fromFile(input), directory, true, check, progress, extractor)
+            } else {
+                CastPreparation.withAudioStream(input, extractor, directory, check, progress)
+            }
             writer.get(); check()
             return prepared
         } finally {
@@ -54,7 +59,7 @@ internal object CastPipelinedPreparation {
         }
     }
 
-    /** Unknown-length TS source: only completed encoding may report EOF to the extractor. */
+    /** Unknown-length audio source: only completed encoding may report EOF to the extractor. */
     private class GrowingSource(file: File, private val writer: Future<File>,
                                 private val aborted: AtomicBoolean, private val check: () -> Unit) : MediaDataSource() {
         private val reader = CastGrowingFile(file, writer, aborted, Runnable { check() })

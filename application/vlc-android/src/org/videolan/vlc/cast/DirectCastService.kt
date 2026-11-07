@@ -40,6 +40,7 @@ class DirectCastService : Service() {
     private var conversionJob: Job? = null
     private val retiredServers = mutableListOf<Pair<CastFileServer, File?>>()
     private var preparedFolder: File? = null
+    private var preparedOutput: CastPreparation.Prepared? = null
     private var server: CastFileServer? = null
     private var connection: CastConnection? = null
     private var wake: PowerManager.WakeLock? = null
@@ -101,7 +102,7 @@ class DirectCastService : Service() {
                         val folder = File(cacheDir, "direct-cast-${UUID.randomUUID()}").apply { check(mkdirs()) { "Temporary storage is unavailable" } }
                         directory = folder
                         val original = if (!convert) CastInput.open(this@DirectCastService, Uri.parse(uri)) else null
-                        val prepared = if (convert) CastAudioPreparation.prepare(this@DirectCastService, Uri.parse(uri), folder,
+                        val prepared = if (convert) CastPreparedCache.prepare(this@DirectCastService, Uri.parse(uri), folder,
                             { ctx.ensureActive() }, { message -> update { if (current.active) current.copy(message = message) else current } }) else null
                         ctx.ensureActive()
                         val address = InetAddress.getByName(host)
@@ -124,6 +125,7 @@ class DirectCastService : Service() {
                         synchronized(resources) {
                             if (destroyed || !ctx.isActive) { http.close(); client.close(); return@launch }
                             server = http; connection = client
+                            preparedOutput = prepared
                             mediaUrl = http.mediaUrl(); mediaMime = mime; subtitleUrl = captions
                             update { current.copy(preparing = false, message = "Connecting to $device…", subtitle = captions != null) }
                             client.start()
@@ -188,7 +190,7 @@ class DirectCastService : Service() {
             try {
                 val root = requireNotNull(directory)
                 val folder = File(root, "audio-${UUID.randomUUID()}").apply { check(mkdirs()) }; attempt = folder
-                val prepared = CastAudioPreparation.prepare(this@DirectCastService, Uri.parse(current.mediaUri), folder,
+                val prepared = CastPreparedCache.prepare(this@DirectCastService, Uri.parse(current.mediaUri), folder,
                     { ctx.ensureActive() }, { update { if (current.active) current.copy(message = it) else current } })
                 ctx.ensureActive()
                 val http = CastFileServer(requireNotNull(localAddress), prepared.file, prepared.mime)
@@ -197,6 +199,7 @@ class DirectCastService : Service() {
                     if (destroyed || !ctx.isActive || !current.active) return@launch
                     val captions = subtitleText?.let { http.setSubtitles(it) }
                     server?.let { retiredServers.add(it to preparedFolder) }; server = http; preparedFolder = folder
+                    preparedOutput = prepared
                     candidate = null; retained = true
                     mediaUrl = http.mediaUrl(); mediaMime = prepared.mime; subtitleUrl = captions
                     val now = SystemClock.elapsedRealtime()
@@ -270,6 +273,8 @@ class DirectCastService : Service() {
         synchronized(resources) {
             destroyed = true
             connection?.close(); server?.close()
+            CastPreparedCache.remember(preparedOutput)
+            preparedOutput = null
             retiredServers.forEach { (http, folder) -> http.close(); folder?.deleteRecursively() }; retiredServers.clear()
             if (wake?.isHeld == true) wake?.release()
             if (wifi?.isHeld == true) wifi?.release()

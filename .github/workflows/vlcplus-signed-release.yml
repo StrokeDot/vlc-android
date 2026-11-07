@@ -125,7 +125,7 @@ jobs:
             cat cast-performance.txt
             adb logcat -d > cast-device-log.txt
             adb pull /sdcard/Android/data/com.strokedot.vlcplus.codectests/files/. cast-diagnostics
-            grep -q 'OK (16 tests)' codec-result.txt
+            grep -q 'OK (17 tests)' codec-result.txt
 
       - name: Save Android 16 controller screenshot
         if: always()
