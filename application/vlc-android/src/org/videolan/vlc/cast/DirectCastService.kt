@@ -54,6 +54,9 @@ class DirectCastService : Service() {
     private var mediaMime = ""
     private var title = ""
     private var device = ""
+    private var bufferingSinceMs = 0L
+    private var bufferingAtPositionMs = -1L
+    private var bufferingWarningIssued = false
 
     override fun onBind(intent: Intent?) = null
 
@@ -82,6 +85,9 @@ class DirectCastService : Service() {
                 if (current.active) return START_NOT_STICKY
                 device = intent.getStringExtra("device") ?: "TV"
                 title = intent.getStringExtra("title") ?: "Video"
+                bufferingSinceMs = 0L
+                bufferingAtPositionMs = -1L
+                bufferingWarningIssued = false
                 update(true) { DirectCastState(active = true, preparing = true, message = "Preparing to cast…",
                     position = intent.getLongExtra("position", 0), duration = intent.getLongExtra("duration", 0),
                     title = title, device = device, mediaUri = intent.getStringExtra("uri") ?: "") }
@@ -173,6 +179,9 @@ class DirectCastService : Service() {
 
     private fun loadCurrent() = synchronized(resources) {
         if (!destroyed && current.active) {
+            bufferingSinceMs = 0L
+            bufferingAtPositionMs = -1L
+            bufferingWarningIssued = false
             val snapshot = current
             val position = snapshot.position + if (snapshot.playing) SystemClock.elapsedRealtime() - snapshot.positionUpdatedAt else 0
             connection?.load(mediaUrl, mediaMime, title, position, subtitleUrl, !snapshot.connected || snapshot.playing, snapshot.duration, CastSubtitleAppearance.load(this))
@@ -231,11 +240,46 @@ class DirectCastService : Service() {
                 retiredServers.forEach { (http, folder) -> http.close(); folder?.deleteRecursively() }; retiredServers.clear()
             }
         }
+        val now = SystemClock.elapsedRealtime()
+        val reportedPosition = (data.optDouble("currentTime", current.position / 1000.0) * 1000).toLong()
+        var stalledReason: String? = null
+        if (playing == "BUFFERING" && data.has("mediaSessionId") && !current.preparing) {
+            if (bufferingSinceMs == 0L || kotlin.math.abs(reportedPosition - bufferingAtPositionMs) > 1500) {
+                bufferingSinceMs = now
+                bufferingAtPositionMs = reportedPosition
+                bufferingWarningIssued = false
+            }
+            if (!bufferingWarningIssued && now - bufferingSinceMs >= 25000L) {
+                bufferingWarningIssued = true
+                val http = server
+                val gets = http?.mediaGetCount() ?: 0L
+                val heads = http?.mediaHeadCount() ?: 0L
+                val bytes = http?.mediaBytesServed() ?: 0L
+                val errors = http?.mediaFailureCount() ?: 0L
+                Log.w("VLCPlus/CastDiag",
+                    "TV buffering timeout: mediaGet=$gets mediaHead=$heads deliveredBytes=$bytes httpErrors=$errors mime=$mediaMime")
+                stalledReason = when {
+                    gets == 0L -> "The TV accepted the cast, but has not requested the movie from your phone. Check that both devices are on the same local network and that the router is not isolating the TV."
+                    bytes == 0L -> "The TV requested the movie, but VLC Plus could not deliver any media bytes. Check the TV's network connection and router isolation. Try casting a small MP4."
+                    else -> "The TV received video data but did not start playing. It may not support this movie's video, audio or MKV container. Stop casting, choose Convert before selecting the TV, and try again. If it still buffers, try a small H.264 MP4 to distinguish codec support from a network problem."
+                }
+            }
+        } else if (playing == "PLAYING") {
+            bufferingSinceMs = 0L
+            bufferingAtPositionMs = -1L
+            bufferingWarningIssued = false
+        }
         update { current.copy(connected = data.has("mediaSessionId"), playing = playing == "PLAYING",
-            position = (data.optDouble("currentTime", current.position / 1000.0) * 1000).toLong(),
-            positionUpdatedAt = SystemClock.elapsedRealtime(),
+            position = reportedPosition,
+            positionUpdatedAt = now,
             duration = if (duration > 0) duration else current.duration,
-            message = if (current.preparing) current.message else when (playing) { "PLAYING" -> "Playing on $device"; "PAUSED" -> "Paused on $device"; "BUFFERING" -> "Buffering on $device…"; else -> current.message }) }
+            error = stalledReason ?: if (playing == "PLAYING") null else current.error,
+            message = if (current.preparing) current.message else when (playing) {
+                "PLAYING" -> "Playing on $device"
+                "PAUSED" -> "Paused on $device"
+                "BUFFERING" -> if (bufferingWarningIssued) "TV playback stalled — check casting diagnosis" else "Buffering on $device…"
+                else -> current.message
+            }) }
     }
 
     private fun readSubtitle(uri: Uri): String {
