@@ -1,7 +1,7 @@
 name: VLC Plus Android debug APK
 on:
   push:
-    branches: [bluevlc/bootstrap, vlcplus/in-app-updater, vlcplus/direct-cast-subtitles, vlcplus/cast-controls-v7, vlcplus/cast-performance-v8]
+    branches: [bluevlc/bootstrap, vlcplus/in-app-updater, vlcplus/direct-cast-subtitles, vlcplus/cast-controls-v7, vlcplus/cast-performance-v8, vlcplus/tv-buffering-diagnostics, vlcplus/cast-recovery-embedded-subtitles]
   workflow_dispatch:
 permissions:
   contents: read
@@ -88,7 +88,7 @@ jobs:
             cat cast-performance.txt
             adb logcat -d > cast-device-log.txt
             adb pull /sdcard/Android/data/com.strokedot.vlcplus.codectests/files/. cast-diagnostics
-            grep -q 'OK (17 tests)' codec-result.txt
+            grep -q 'OK (18 tests)' codec-result.txt
 
       - name: Save Android 16 controller screenshot
         if: always()

@@ -4,7 +4,7 @@ on:
   push:
     # One-time bootstrap: creating this branch tests signing secrets and publishes
     # the first signed APK. Subsequent releases use versioned tags / dispatch.
-    branches: [vlcplus/first-signed-release]
+    branches: [vlcplus/first-signed-release, vlcplus/cast-recovery-embedded-subtitles]
     tags: [vlcplus-*]
 concurrency:
   group: vlcplus-signed-${{ github.ref }}
@@ -125,7 +125,7 @@ jobs:
             cat cast-performance.txt
             adb logcat -d > cast-device-log.txt
             adb pull /sdcard/Android/data/com.strokedot.vlcplus.codectests/files/. cast-diagnostics
-            grep -q 'OK (17 tests)' codec-result.txt
+            grep -q 'OK (18 tests)' codec-result.txt
 
       - name: Save Android 16 controller screenshot
         if: always()
@@ -141,6 +141,7 @@ jobs:
           retention-days: 30
 
   publish:
+    if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/vlcplus/first-signed-release'
     needs: [build-signed, codec-fixtures]
     runs-on: ubuntu-latest
     permissions:

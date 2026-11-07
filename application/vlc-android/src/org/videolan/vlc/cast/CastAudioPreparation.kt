@@ -10,6 +10,10 @@ import java.util.concurrent.CancellationException
 
 /** Prepare compatible audio alongside copied video, with the existing VLC encoder as fallback. */
 internal object CastAudioPreparation {
+    // Android PCM→AAC acceleration passed synthetic fixtures but is not yet
+    // validated on long 4K receiver handoffs. Prefer the established VLC AAC
+    // pipeline for real casts until we can measure it on physical devices.
+    private const val ENABLE_EXPERIMENTAL_PCM = false
     fun prepare(context: Context, uri: Uri, directory: File, check: () -> Unit,
                 progress: (String) -> Unit): CastPreparation.Prepared = try {
         CastPreparation.prepare(context, uri, directory, true, check, progress)
@@ -20,7 +24,7 @@ internal object CastAudioPreparation {
 
     private fun prepareUnsupported(context: Context, input: File, directory: File, check: () -> Unit,
                                    progress: (String) -> Unit): CastPreparation.Prepared {
-        if (android.os.Build.VERSION.SDK_INT >= 28) {
+        if (ENABLE_EXPERIMENTAL_PCM && android.os.Build.VERSION.SDK_INT >= 28) {
             val candidate = File(directory, "platform-aac.mp4")
             val started = SystemClock.elapsedRealtime()
             try {
