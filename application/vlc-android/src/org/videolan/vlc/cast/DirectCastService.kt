@@ -110,7 +110,7 @@ class DirectCastService : Service() {
                         localAddress = local
                         require(!local.isAnyLocalAddress) { "No network route to this receiver" }
                         // Validate URI/encoding before opening a listening socket.
-                        subtitleText = subtitle?.let { readSubtitle(Uri.parse(it)) }
+                        subtitleText = subtitle?.let { loadSubtitle(it, Uri.parse(uri)) }
                         ctx.ensureActive()
                         val source = original?.source ?: CastFileServer.FileSource(requireNotNull(prepared).file)
                         val mime = original?.mime ?: requireNotNull(prepared).mime
@@ -153,7 +153,7 @@ class DirectCastService : Service() {
             SUBTITLE -> if (current.connected && !current.preparing) scope.launch {
                 try {
                     val uri = intent.getStringExtra("subtitle")
-                    val text = if (uri == null) null else readSubtitle(Uri.parse(uri))
+                    val text = uri?.let { loadSubtitle(it, Uri.parse(current.mediaUri)) }
                     synchronized(resources) {
                         if (destroyed || !current.active) return@launch
                         subtitleText = text
@@ -236,6 +236,15 @@ class DirectCastService : Service() {
             positionUpdatedAt = SystemClock.elapsedRealtime(),
             duration = if (duration > 0) duration else current.duration,
             message = if (current.preparing) current.message else when (playing) { "PLAYING" -> "Playing on $device"; "PAUSED" -> "Paused on $device"; "BUFFERING" -> "Buffering on $device…"; else -> current.message }) }
+    }
+
+    private fun loadSubtitle(selection: String, movie: Uri): String {
+        if (selection.startsWith("embedded:")) {
+            val track = selection.removePrefix("embedded:").toIntOrNull()
+                ?: throw IllegalArgumentException("Invalid embedded subtitle track")
+            return CastEmbeddedSubtitles.extract(this, movie, track)
+        }
+        return readSubtitle(Uri.parse(selection))
     }
 
     private fun readSubtitle(uri: Uri): String {
