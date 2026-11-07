@@ -61,9 +61,13 @@ vary with the receiver's installed fonts.
 
 ## Performance
 
-Readable MediaStore paths bypass the full source-file staging copy. The overlapping
-Dolby audio path uses the fast AAC search at the existing stereo/192kbps/48kHz settings;
-the compatibility path retains the previous encoder settings. Regular files are
-served through channel transfer, with portable stream copying for other sources.
-Video frames and original frame rate remain unchanged. TV-rendered FPS is not
-reported by the standard control channel, so real-TV smoothness needs device testing.
+Readable MediaStore paths bypass the full source-file staging copy. On Android 9
+and later, audio that needs VLC decoding can pass through timed stereo PCM to
+Android's AAC encoder in batches. The encoder uses AAC-LC at 192 kbps and 48 kHz.
+The PCM file is temporary and the app falls back to the established VLC AAC
+path if there is insufficient space or the Android encoder is unavailable.
+Original video samples, frame timing and full-file seeking are preserved.
+
+The app caches the most recent eligible completed conversion, up to 8 GiB, and
+reuses it when the source file is unchanged. This uses a hard link to the prepared
+file rather than writing another copy. Clearing the app cache removes it.

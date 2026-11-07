@@ -101,7 +101,7 @@ class DirectCastService : Service() {
                         val folder = File(cacheDir, "direct-cast-${UUID.randomUUID()}").apply { check(mkdirs()) { "Temporary storage is unavailable" } }
                         directory = folder
                         val original = if (!convert) CastInput.open(this@DirectCastService, Uri.parse(uri)) else null
-                        val prepared = if (convert) CastAudioPreparation.prepare(this@DirectCastService, Uri.parse(uri), folder,
+                        val prepared = if (convert) CastPreparedCache.prepare(this@DirectCastService, Uri.parse(uri), folder,
                             { ctx.ensureActive() }, { message -> update { if (current.active) current.copy(message = message) else current } }) else null
                         ctx.ensureActive()
                         val address = InetAddress.getByName(host)
@@ -188,7 +188,7 @@ class DirectCastService : Service() {
             try {
                 val root = requireNotNull(directory)
                 val folder = File(root, "audio-${UUID.randomUUID()}").apply { check(mkdirs()) }; attempt = folder
-                val prepared = CastAudioPreparation.prepare(this@DirectCastService, Uri.parse(current.mediaUri), folder,
+                val prepared = CastPreparedCache.prepare(this@DirectCastService, Uri.parse(current.mediaUri), folder,
                     { ctx.ensureActive() }, { update { if (current.active) current.copy(message = it) else current } })
                 ctx.ensureActive()
                 val http = CastFileServer(requireNotNull(localAddress), prepared.file, prepared.mime)
