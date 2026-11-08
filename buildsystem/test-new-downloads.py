@@ -112,8 +112,10 @@ def main():
     folder = wait_for_ui(folder_ready)
     screenshot("VLC-Plus-Browse.png")
     tap(folder)
-    wait_for_ui(recent_videos_ready)
-    screenshot("VLC-Plus-New.png")
+    try:
+        wait_for_ui(recent_videos_ready)
+    finally:
+        screenshot("VLC-Plus-New.png")
 
 
 if __name__ == "__main__":
