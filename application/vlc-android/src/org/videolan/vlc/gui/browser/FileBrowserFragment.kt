@@ -141,6 +141,10 @@ open class FileBrowserFragment : BaseBrowserFragment() {
 
     override fun onResume() {
         super.onResume()
+        if (isNewDownloads) {
+            viewModel.refresh()
+            return
+        }
         viewModel.resetSort()
         if (viewModel.dataset.value.isNotEmpty())
             viewModel.reSort()

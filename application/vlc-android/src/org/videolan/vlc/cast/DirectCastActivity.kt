@@ -108,14 +108,46 @@ class DirectCastActivity : AppCompatActivity(), CastControlsView.Actions {
     override fun subtitles() {
         if (current.preparing) return
         AlertDialog.Builder(this).setTitle("Subtitles")
-            .setItems(arrayOf("Choose from movie folder", "Choose using Files", "Appearance & preview", "Off")) { _, index ->
+            .setItems(arrayOf("Extract from movie", "Choose from movie folder", "Choose using Files", "Appearance & preview", "Off")) { _, index ->
                 when (index) {
-                    0 -> openMovieFolder()
-                    1 -> openSystemPicker()
-                    2 -> CastSubtitleAppearance.show(this) { if (current.connected) command(DirectCastService.STYLE) }
+                    0 -> openEmbeddedSubtitles()
+                    1 -> openMovieFolder()
+                    2 -> openSystemPicker()
+                    3 -> CastSubtitleAppearance.show(this) { if (current.connected) command(DirectCastService.STYLE) }
                     else -> { pendingSubtitle = null; if (current.connected) command(DirectCastService.SUBTITLE); render() }
                 }
             }.show()
+    }
+
+    private fun openEmbeddedSubtitles() {
+        val movie = movieUri() ?: return
+        lifecycleScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching { CastEmbeddedSubtitles.tracks(this@DirectCastActivity, movie) }
+            }
+            if (isFinishing || isDestroyed) return@launch
+            val tracks = result.getOrElse {
+                AlertDialog.Builder(this@DirectCastActivity).setTitle("Embedded subtitles")
+                    .setMessage(it.message ?: "Could not inspect this movie's subtitle tracks.")
+                    .setPositiveButton("OK", null).show()
+                return@launch
+            }
+            if (tracks.isEmpty()) {
+                AlertDialog.Builder(this@DirectCastActivity).setTitle("Embedded subtitles")
+                    .setMessage("No compatible embedded text subtitles were detected. Bitmap subtitles (PGS/VobSub) are not supported. You can still choose an external SRT or WebVTT file.")
+                    .setPositiveButton("OK", null).show()
+                return@launch
+            }
+            AlertDialog.Builder(this@DirectCastActivity).setTitle("Choose embedded subtitles")
+                .setItems(tracks.map { it.label }.toTypedArray()) { _, selection ->
+                    CastSubtitleAppearance.show(this@DirectCastActivity) {
+                        pendingSubtitle = "embedded:" + tracks[selection].index
+                        if (current.connected) command(DirectCastService.SUBTITLE) { putExtra("subtitle", pendingSubtitle) }
+                        else Toast.makeText(this@DirectCastActivity, "Embedded subtitles ready for casting", Toast.LENGTH_SHORT).show()
+                        render()
+                    }
+                }.setNegativeButton("Cancel", null).show()
+        }
     }
 
     private fun sameMovie() = movieUri()?.toString() == current.mediaUri
@@ -156,7 +188,7 @@ class DirectCastActivity : AppCompatActivity(), CastControlsView.Actions {
 
     override fun help() {
         AlertDialog.Builder(this).setTitle("Casting help")
-            .setMessage("Fast cast sends the original file first.\n\nNo sound? Tap Convert to prepare stereo audio.\n\nSubtitle files: SRT or WebVTT. Choose from movie folder opens beside your video.\n\nStop cancels casting and preparation. Use VLC casting is the original fallback.")
+            .setMessage("Fast cast sends the original file first.\n\nNo sound? Tap Convert to prepare stereo audio.\n\nSubtitles: Extract from movie reads compatible embedded text tracks. External SRT/WebVTT files can still be chosen from the movie folder. Bitmap subtitle formats are not yet supported.\n\nStop cancels casting and preparation. Use VLC casting is the original fallback.")
             .setPositiveButton("OK", null).show()
     }
 

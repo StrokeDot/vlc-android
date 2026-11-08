@@ -123,6 +123,7 @@ import org.videolan.vlc.interfaces.IEventsHandler
 import org.videolan.vlc.interfaces.IRefreshable
 import org.videolan.vlc.media.MediaUtils
 import org.videolan.vlc.media.PlaylistManager
+import org.videolan.vlc.providers.NEW_DOWNLOADS_LOCATION
 import org.videolan.vlc.repository.BrowserFavRepository
 import org.videolan.vlc.util.ContextOption
 import org.videolan.vlc.util.ContextOption.CTX_ADD_FOLDER_AND_SUB_PLAYLIST
@@ -184,6 +185,7 @@ abstract class BaseBrowserFragment : MediaBrowserFragment<BrowserModel>(), IRefr
         }
     protected lateinit var adapter: BaseBrowserAdapter
     protected abstract val categoryTitle: String
+    protected val isNewDownloads get() = mrl == NEW_DOWNLOADS_LOCATION
 
     protected lateinit var binding: DirectoryBrowserBinding
     protected lateinit var browserFavRepository: BrowserFavRepository
@@ -246,7 +248,7 @@ abstract class BaseBrowserFragment : MediaBrowserFragment<BrowserModel>(), IRefr
         menu.findItem(R.id.ml_menu_filter)?.isVisible = enableSearchOption()
         menu.findItem(R.id.ml_menu_sortby)?.isVisible = false
         menu.findItem(R.id.ml_menu_sortby_media_number)?.isVisible = false
-        menu.findItem(R.id.ml_menu_add_playlist)?.isVisible = !isRootDirectory
+        menu.findItem(R.id.ml_menu_add_playlist)?.isVisible = !isRootDirectory && !isNewDownloads
         addPlaylistFolderOnly = menu.findItem(R.id.folder_add_playlist)
         addPlaylistFolderOnly.isVisible = adapter.mediaCount > 0
 
@@ -519,7 +521,7 @@ abstract class BaseBrowserFragment : MediaBrowserFragment<BrowserModel>(), IRefr
      */
     protected open fun updateEmptyView() {
         binding.emptyLoading.emptyText = viewModel.filterQuery?.let { getString(R.string.empty_search, it) }
-                ?: getString(R.string.nomedia)
+                ?: getString(if (isNewDownloads) R.string.new_downloads_empty else R.string.nomedia)
         swipeRefreshLayout.let {
             when {
                 !Permissions.canReadStorage(requireActivity()) -> binding.emptyLoading.state = EmptyLoadingState.MISSING_PERMISSION
@@ -673,7 +675,7 @@ abstract class BaseBrowserFragment : MediaBrowserFragment<BrowserModel>(), IRefr
 
             R.id.ml_menu_display_options -> {
                 //filter all sorts and keep only applicable ones
-                val sorts = arrayListOf(Medialibrary.SORT_ALPHA, Medialibrary.SORT_FILENAME)
+                val sorts = if (isNewDownloads) emptyList() else listOf(Medialibrary.SORT_ALPHA, Medialibrary.SORT_FILENAME)
                 val settings = Settings.getInstance(requireActivity())
 
                 //Open the display settings Bottom sheet
@@ -683,8 +685,8 @@ abstract class BaseBrowserFragment : MediaBrowserFragment<BrowserModel>(), IRefr
                     sorts = sorts,
                     currentSort = viewModel.provider.sort.takeIf { it != 0 } ?: Medialibrary.SORT_FILENAME,
                     currentSortDesc = viewModel.provider.desc,
-                    showOnlyMultimediaFiles = settings.getBoolean(BROWSER_SHOW_ONLY_MULTIMEDIA, false),
-                    showHiddenFiles = settings.getBoolean(BROWSER_SHOW_HIDDEN_FILES, true),
+                    showOnlyMultimediaFiles = if (isNewDownloads) null else settings.getBoolean(BROWSER_SHOW_ONLY_MULTIMEDIA, false),
+                    showHiddenFiles = if (isNewDownloads) null else settings.getBoolean(BROWSER_SHOW_HIDDEN_FILES, true),
                     defaultPlaybackActions = DefaultPlaybackActionMediaType.FILE.getDefaultPlaybackActions(settings),
                     defaultActionType = getString(R.string.files)
                 )

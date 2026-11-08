@@ -4,7 +4,7 @@ on:
   push:
     # One-time bootstrap: creating this branch tests signing secrets and publishes
     # the first signed APK. Subsequent releases use versioned tags / dispatch.
-    branches: [vlcplus/first-signed-release]
+    branches: [vlcplus/first-signed-release, vlcplus/cast-recovery-embedded-subtitles]
     tags: [vlcplus-*]
 concurrency:
   group: vlcplus-signed-${{ github.ref }}
@@ -98,6 +98,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: VLC-Plus-signed-arm64
+          path: signed-release
       - uses: actions/download-artifact@v4
         with:
           name: VLC-Plus-release-codec-tests
@@ -125,7 +130,17 @@ jobs:
             cat cast-performance.txt
             adb logcat -d > cast-device-log.txt
             adb pull /sdcard/Android/data/com.strokedot.vlcplus.codectests/files/. cast-diagnostics
-            grep -q 'OK (17 tests)' codec-result.txt
+            grep -q 'OK (18 tests)' codec-result.txt
+            python3 buildsystem/test-new-downloads.py "$(find signed-release -name '*.apk' -print -quit)"
+
+      - name: Save Android New folder screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: VLC-Plus-New-folder-Android16
+          path: new-downloads-screenshots/*.png
+          if-no-files-found: warn
+          retention-days: 30
 
       - name: Save Android 16 controller screenshot
         if: always()
@@ -141,6 +156,7 @@ jobs:
           retention-days: 30
 
   publish:
+    if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/vlcplus/first-signed-release' || github.ref == 'refs/heads/vlcplus/cast-recovery-embedded-subtitles'
     needs: [build-signed, codec-fixtures]
     runs-on: ubuntu-latest
     permissions:
@@ -170,4 +186,4 @@ jobs:
           gh release create "$TAG" signed-release/* \
             --target "$GITHUB_SHA" \
             --title "VLC Plus $TAG" \
-            --notes "Independent signed VLC Plus Android release. ARM64 APK; includes SHA-256 checksum. Not affiliated with VideoLAN. Signed APKs can update prior VLC Plus installs made with the same signing key."
+            --notes "VLC Plus .11: fixes TV casting session recovery and audio-conversion handoff; restores the stable VLC AAC conversion route; adds embedded MKV text-subtitle extraction (SRT, ASS/SSA, WebVTT) for casting. Includes SHA-256 checksum. Passed automated Android 16 tests; real TV and full-length 4K playback remain to be verified. Independent release, not affiliated with VideoLAN. Signed APK supports in-place updates from prior VLC Plus installs."

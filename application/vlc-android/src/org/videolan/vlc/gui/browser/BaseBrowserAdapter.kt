@@ -45,6 +45,7 @@ import org.videolan.tools.MultiSelectAdapter
 import org.videolan.tools.MultiSelectHelper
 import org.videolan.tools.Settings
 import org.videolan.vlc.R
+import org.videolan.vlc.providers.NEW_DOWNLOADS_LOCATION
 import org.videolan.vlc.databinding.BrowserItemBinding
 import org.videolan.vlc.databinding.BrowserItemSeparatorBinding
 import org.videolan.vlc.databinding.CardBrowserItemBinding
@@ -85,7 +86,7 @@ open class BaseBrowserAdapter(val browserContainer: BrowserContainer<MediaLibrar
     private var networkRoot = false
     private var specialIcons = false
 
-    val diffCallback = BrowserDiffCallback()
+    val diffCallback = BrowserDiffCallback(browserContainer.mrl == NEW_DOWNLOADS_LOCATION)
     private var currentPlayingVisu: MiniVisualizer? = null
     private var model: PlaylistModel? = null
 
@@ -199,7 +200,8 @@ open class BaseBrowserAdapter(val browserContainer: BrowserContainer<MediaLibrar
         val scheme = media.uri?.scheme ?: ""
         vh.bindingContainer.setHasContextMenu(((!networkRoot || isFavorite)
                 && "content" != scheme
-                && "otg" != scheme)
+                && "otg" != scheme
+                && media.location != NEW_DOWNLOADS_LOCATION)
                 && !multiSelectHelper.inActionMode)
         vh.bindingContainer.setFileName(if ((sort == Medialibrary.SORT_FILENAME || sort == Medialibrary.SORT_DEFAULT) && media.type != MediaWrapper.TYPE_DIR && "file" == scheme) media.fileName else null)
         if (networkRoot || (isFavorite && getProtocol(media)?.contains("file") == false)) vh.bindingContainer.setProtocol(getProtocol(media))
@@ -361,6 +363,8 @@ open class BaseBrowserAdapter(val browserContainer: BrowserContainer<MediaLibrar
         when (media.type) {
             MediaWrapper.TYPE_AUDIO -> return if (browserContainer.inCards) audioDrawableBig else audioDrawable
             MediaWrapper.TYPE_DIR -> {
+                if (media.location == NEW_DOWNLOADS_LOCATION)
+                    return if (browserContainer.inCards) qaDownloadDrawableBig else qaDownloadDrawable
                 if (specialFolders) {
                     val uri = media.uri
                     if (AndroidDevices.MediaFolders.EXTERNAL_PUBLIC_MOVIES_DIRECTORY_URI == uri || AndroidDevices.MediaFolders.WHATSAPP_VIDEOS_FILE_URI == uri)
@@ -400,11 +404,15 @@ open class BaseBrowserAdapter(val browserContainer: BrowserContainer<MediaLibrar
 
     override fun createCB() = diffCallback
 
-    class BrowserDiffCallback : DiffCallback<MediaLibraryItem>() {
+    class BrowserDiffCallback(private val compareDescription: Boolean) : DiffCallback<MediaLibraryItem>() {
         var oldSort = -1
         var newSort = -1
         var oldAsc = true
         var newAsc = true
+
+        private fun descriptionChanged(oldItem: MediaWrapper, newItem: MediaWrapper): Boolean =
+            (compareDescription || newItem.location == NEW_DOWNLOADS_LOCATION) &&
+                oldItem.description != newItem.description
 
         override fun areContentsTheSame(oldItemPosition: Int, newItemPosition: Int):Boolean {
             val result = try {
@@ -413,7 +421,8 @@ open class BaseBrowserAdapter(val browserContainer: BrowserContainer<MediaLibrar
                 (oldItem.displayTime == newItem.displayTime) &&
                         (oldItem.playCount == newItem.playCount) &&
                         (oldItem.fileName == newItem.fileName) &&
-                        (newItem.title == oldItem.title)
+                        (newItem.title == oldItem.title) &&
+                        !descriptionChanged(oldItem, newItem)
             } catch (ignored: Exception) {
                 true
             }
@@ -424,6 +433,7 @@ open class BaseBrowserAdapter(val browserContainer: BrowserContainer<MediaLibrar
             try {
                 val oldItem = oldList[oldItemPosition] as MediaWrapper
                 val newItem = newList[newItemPosition] as MediaWrapper
+                if (descriptionChanged(oldItem, newItem)) return null
                 if (oldItem.displayTime != newItem.displayTime || oldItem.playCount != newItem.playCount) return UPDATE_PROGRESS
             } catch (ignored: Exception) {
             }
