@@ -75,7 +75,7 @@ class DirectCastService : Service() {
         val open = Intent(this, DirectCastActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
         val stop = Intent(this, DirectCastService::class.java).setAction(STOP)
         val flags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        return NotificationCompat.Builder(this, CHANNEL).setSmallIcon(R.drawable.ic_stat_vlc)
+        return NotificationCompat.Builder(this, CHANNEL).setSmallIcon(R.drawable.ic_stat_cast)
             .setContentTitle("VLC Plus — $device").setContentText(current.message)
             .setOngoing(true).setOnlyAlertOnce(true)
             .setContentIntent(PendingIntent.getActivity(this, 0, open, flags))
