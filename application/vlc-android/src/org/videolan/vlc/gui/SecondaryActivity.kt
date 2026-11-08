@@ -62,6 +62,7 @@ import org.videolan.vlc.gui.browser.KEY_JUMP_TO
 import org.videolan.vlc.gui.browser.KEY_MEDIA
 import org.videolan.vlc.gui.browser.MLStorageBrowserFragment
 import org.videolan.vlc.gui.browser.NetworkBrowserFragment
+import org.videolan.vlc.gui.browser.NewDownloadsFragment
 import org.videolan.vlc.gui.helpers.UiTools
 import org.videolan.vlc.gui.network.MRLPanelFragment
 import org.videolan.vlc.gui.video.VideoGridFragment
@@ -207,6 +208,7 @@ class SecondaryActivity : ContentActivity(), IDialogManager {
             ABOUT -> fragment = AboutFragment()
             STREAMS -> fragment = MRLPanelFragment()
             HISTORY -> fragment = HistoryFragment()
+            NEW_DOWNLOADS -> fragment = NewDownloadsFragment()
             VIDEO_GROUP_LIST -> {
                 fragment = VideoGridFragment().apply {
                     arguments = bundleOf(
@@ -241,6 +243,7 @@ class SecondaryActivity : ContentActivity(), IDialogManager {
         const val ABOUT = "about"
         const val STREAMS = "streams"
         const val HISTORY = "history"
+        const val NEW_DOWNLOADS = "new_downloads"
         const val VIDEO_GROUP_LIST = "videoGroupList"
         const val STORAGE_BROWSER = "storage_browser"
         const val STORAGE_BROWSER_ONBOARDING = "storage_browser_onboarding"

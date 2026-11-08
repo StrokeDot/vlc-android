@@ -219,6 +219,11 @@ class MainBrowserFragment : BaseFragment(), View.OnClickListener, CtxActionRecei
 
         displayInList = Settings.getInstance(requireActivity()).getBoolean(displayInListKey, false)
 
+        view.findViewById<View>(R.id.new_downloads_entry).setOnClickListener {
+            startActivity(Intent(requireContext(), SecondaryActivity::class.java)
+                .putExtra(SecondaryActivity.KEY_FRAGMENT, SecondaryActivity.NEW_DOWNLOADS))
+        }
+
         //local
         localEntry = view.findViewById(R.id.local_browser_entry)
         val storageBrowserContainer = MainBrowserContainer(isNetwork = false, isFile = true, inCards = !displayInList)
