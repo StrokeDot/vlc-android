@@ -69,6 +69,7 @@ import org.videolan.vlc.gui.helpers.hf.requestOtgRoot
 import org.videolan.vlc.gui.view.EmptyLoadingState
 import org.videolan.vlc.gui.view.EmptyLoadingStateView
 import org.videolan.vlc.gui.view.TitleListView
+import org.videolan.vlc.providers.NEW_DOWNLOADS_LOCATION
 import org.videolan.vlc.media.MediaUtils
 import org.videolan.vlc.repository.BrowserFavRepository
 import org.videolan.vlc.util.ContextOption
@@ -219,26 +220,22 @@ class MainBrowserFragment : BaseFragment(), View.OnClickListener, CtxActionRecei
 
         displayInList = Settings.getInstance(requireActivity()).getBoolean(displayInListKey, false)
 
-        view.findViewById<View>(R.id.new_downloads_entry).setOnClickListener {
-            startActivity(Intent(requireContext(), SecondaryActivity::class.java)
-                .putExtra(SecondaryActivity.KEY_FRAGMENT, SecondaryActivity.NEW_DOWNLOADS))
-        }
-
         //local
         localEntry = view.findViewById(R.id.local_browser_entry)
         val storageBrowserContainer = MainBrowserContainer(isNetwork = false, isFile = true, inCards = !displayInList)
         val storageBrowserAdapter = BaseBrowserAdapter(storageBrowserContainer)
         localEntry.list.adapter = storageBrowserAdapter
         containerAdapterAssociation[storageBrowserContainer] = Pair(storageBrowserAdapter, localViewModel)
+        val newDownloads = MediaWrapperImpl(NEW_DOWNLOADS_LOCATION.toUri()).apply {
+            title = getString(R.string.new_downloads)
+            type = MediaWrapper.TYPE_DIR
+        }
         localViewModel.dataset.observe(viewLifecycleOwner) { list ->
-            list?.let {
-                if (Permissions.canReadStorage(requireActivity())) storageBrowserAdapter.update(it)
-                localEntry.loading.state = when {
-                    !Permissions.canReadStorage(requireActivity()) -> EmptyLoadingState.MISSING_PERMISSION
-                    list.isNotEmpty() -> EmptyLoadingState.NONE
-                    localViewModel.loading.value == true -> EmptyLoadingState.LOADING
-                    else -> EmptyLoadingState.EMPTY
-                }
+            if (Permissions.canReadStorage(requireActivity())) {
+                storageBrowserAdapter.update(list.orEmpty() + newDownloads)
+                localEntry.loading.state = EmptyLoadingState.NONE
+            } else {
+                localEntry.loading.state = EmptyLoadingState.MISSING_PERMISSION
             }
         }
         localViewModel.loading.observe(viewLifecycleOwner) {
@@ -392,7 +389,7 @@ class MainBrowserFragment : BaseFragment(), View.OnClickListener, CtxActionRecei
         override fun onClick(v: View, position: Int, item: MediaLibraryItem) {
             val mediaWrapper = item as MediaWrapper
             if (actionMode != null) {
-                if (!checkAdapterForActionMode()) return
+                if (mediaWrapper.location == NEW_DOWNLOADS_LOCATION || !checkAdapterForActionMode()) return
                 val adapter = requireAdapter()
                 if (mediaWrapper.type == MediaWrapper.TYPE_AUDIO ||
                         mediaWrapper.type == MediaWrapper.TYPE_VIDEO ||
@@ -422,6 +419,7 @@ class MainBrowserFragment : BaseFragment(), View.OnClickListener, CtxActionRecei
         override fun onLongClick(v: View, position: Int, item: MediaLibraryItem): Boolean {
             if (item.itemType != MediaLibraryItem.TYPE_MEDIA) return false
             val mediaWrapper = item as MediaWrapper
+            if (mediaWrapper.location == NEW_DOWNLOADS_LOCATION) return false
             if (mediaWrapper.type == MediaWrapper.TYPE_AUDIO ||
                     mediaWrapper.type == MediaWrapper.TYPE_VIDEO ||
                     mediaWrapper.type == MediaWrapper.TYPE_DIR) {

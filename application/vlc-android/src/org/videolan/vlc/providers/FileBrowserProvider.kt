@@ -54,7 +54,7 @@ open class FileBrowserProvider(
     private var otgPosition = -1
 
     init {
-        fetch()
+        if (url != NEW_DOWNLOADS_LOCATION) fetch()
     }
 
     private lateinit var storageObserver : Observer<Boolean>
@@ -129,6 +129,18 @@ open class FileBrowserProvider(
             }
             url == "root" -> launch { browseRootImpl() }
             else -> super.browse(url)
+        }
+    }
+
+    override suspend fun refreshImpl() {
+        if (url != NEW_DOWNLOADS_LOCATION) {
+            super.refreshImpl()
+            return
+        }
+        try {
+            dataset.value = loadNewDownloads(context)
+        } finally {
+            loading.postValue(false)
         }
     }
 
