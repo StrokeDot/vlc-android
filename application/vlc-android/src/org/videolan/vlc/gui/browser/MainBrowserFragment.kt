@@ -34,8 +34,10 @@ import android.view.ViewGroup
 import androidx.appcompat.view.ActionMode
 import androidx.core.content.edit
 import androidx.core.net.toUri
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -69,8 +71,9 @@ import org.videolan.vlc.gui.helpers.hf.requestOtgRoot
 import org.videolan.vlc.gui.view.EmptyLoadingState
 import org.videolan.vlc.gui.view.EmptyLoadingStateView
 import org.videolan.vlc.gui.view.TitleListView
-import org.videolan.vlc.providers.NEW_DOWNLOADS_LOCATION
 import org.videolan.vlc.media.MediaUtils
+import org.videolan.vlc.providers.NEW_DOWNLOADS_LOCATION
+import org.videolan.vlc.providers.loadNewDownloads
 import org.videolan.vlc.repository.BrowserFavRepository
 import org.videolan.vlc.util.ContextOption
 import org.videolan.vlc.util.ContextOption.CTX_ADD_FOLDER_AND_SUB_PLAYLIST
@@ -226,16 +229,27 @@ class MainBrowserFragment : BaseFragment(), View.OnClickListener, CtxActionRecei
         val storageBrowserAdapter = BaseBrowserAdapter(storageBrowserContainer)
         localEntry.list.adapter = storageBrowserAdapter
         containerAdapterAssociation[storageBrowserContainer] = Pair(storageBrowserAdapter, localViewModel)
-        val newDownloads = MediaWrapperImpl(NEW_DOWNLOADS_LOCATION.toUri()).apply {
-            title = getString(R.string.new_downloads)
-            type = MediaWrapper.TYPE_DIR
-        }
-        localViewModel.dataset.observe(viewLifecycleOwner) { list ->
-            if (Permissions.canReadStorage(requireActivity())) {
-                storageBrowserAdapter.update(list.orEmpty() + newDownloads)
-                localEntry.loading.state = EmptyLoadingState.NONE
-            } else {
+        var newDownloadsCount: Int? = null
+        fun updateStorageEntries(list: List<MediaLibraryItem>) {
+            if (!Permissions.canReadStorage(requireActivity())) {
                 localEntry.loading.state = EmptyLoadingState.MISSING_PERMISSION
+                return
+            }
+            val newDownloads = MediaWrapperImpl(NEW_DOWNLOADS_LOCATION.toUri()).apply {
+                title = getString(R.string.new_downloads)
+                type = MediaWrapper.TYPE_DIR
+                newDownloadsCount?.let { description = localViewModel.provider.getDescription(0, it) }
+            }
+            storageBrowserAdapter.update(list + newDownloads)
+            localEntry.loading.state = EmptyLoadingState.NONE
+        }
+        localViewModel.dataset.observe(viewLifecycleOwner) { updateStorageEntries(it.orEmpty()) }
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                if (Permissions.canReadStorage(requireActivity())) {
+                    newDownloadsCount = loadNewDownloads(requireContext()).size
+                    updateStorageEntries(localViewModel.dataset.value)
+                }
             }
         }
         localViewModel.loading.observe(viewLifecycleOwner) {

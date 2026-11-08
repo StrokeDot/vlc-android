@@ -6,6 +6,10 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.res.Resources
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Typeface
 import android.icu.text.Transliterator
 import android.net.Uri
 import android.os.Build
@@ -13,6 +17,7 @@ import android.text.Spannable
 import android.text.SpannableString
 import android.text.style.DynamicDrawableSpan
 import android.text.style.ImageSpan
+import android.text.style.ReplacementSpan
 import android.util.DisplayMetrics
 import android.view.View
 import android.view.ViewGroup.MarginLayoutParams
@@ -262,6 +267,9 @@ fun browserDescription(view: TextView, description: String?) {
 
 fun CharSequence.getDescriptionSpan(context: Context):SpannableString {
     val string = SpannableString(this)
+    if (this == context.getString(R.string.new_downloads_badge)) {
+        string.setSpan(NewDownloadBadgeSpan(context.resources.displayMetrics.density), 0, length, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+    }
     if (this.contains(folderReplacementMarker)) {
         string.setSpan(ImageSpan(context, R.drawable.ic_emoji_folder, DynamicDrawableSpan.ALIGN_BASELINE), this.indexOf(folderReplacementMarker), this.indexOf(folderReplacementMarker)+3, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
     }
@@ -269,6 +277,30 @@ fun CharSequence.getDescriptionSpan(context: Context):SpannableString {
         string.setSpan(ImageSpan(context, R.drawable.ic_emoji_file, DynamicDrawableSpan.ALIGN_BASELINE), this.indexOf(fileReplacementMarker), this.indexOf(fileReplacementMarker)+3, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
     }
     return string
+}
+
+private class NewDownloadBadgeSpan(density: Float) : ReplacementSpan() {
+    private val padding = 4 * density
+    private val radius = 3 * density
+
+    private fun badgePaint(paint: Paint) = Paint(paint).apply {
+        typeface = Typeface.create(typeface, Typeface.BOLD)
+    }
+
+    override fun getSize(paint: Paint, text: CharSequence, start: Int, end: Int, fm: Paint.FontMetricsInt?): Int =
+        kotlin.math.ceil(badgePaint(paint).measureText(text, start, end) + 2 * padding).toInt()
+
+    override fun draw(canvas: Canvas, text: CharSequence, start: Int, end: Int, x: Float, top: Int, y: Int, bottom: Int, paint: Paint) {
+        val badge = badgePaint(paint)
+        val metrics = badge.fontMetrics
+        badge.color = Color.rgb(185, 28, 28)
+        canvas.drawRoundRect(
+            x, y + metrics.ascent, x + badge.measureText(text, start, end) + 2 * padding,
+            y + metrics.descent, radius, radius, badge
+        )
+        badge.color = Color.WHITE
+        canvas.drawText(text, start, end, x + padding, y.toFloat(), badge)
+    }
 }
 
 /**

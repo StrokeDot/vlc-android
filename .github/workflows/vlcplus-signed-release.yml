@@ -98,6 +98,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: VLC-Plus-signed-arm64
+          path: signed-release
       - uses: actions/download-artifact@v4
         with:
           name: VLC-Plus-release-codec-tests
@@ -126,6 +131,16 @@ jobs:
             adb logcat -d > cast-device-log.txt
             adb pull /sdcard/Android/data/com.strokedot.vlcplus.codectests/files/. cast-diagnostics
             grep -q 'OK (18 tests)' codec-result.txt
+            python3 buildsystem/test-new-downloads.py "$(find signed-release -name '*.apk' -print -quit)"
+
+      - name: Save Android New folder screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: VLC-Plus-New-folder-Android16
+          path: new-downloads-screenshots/*.png
+          if-no-files-found: warn
+          retention-days: 30
 
       - name: Save Android 16 controller screenshot
         if: always()

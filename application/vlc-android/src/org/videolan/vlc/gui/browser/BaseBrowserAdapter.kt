@@ -410,6 +410,10 @@ open class BaseBrowserAdapter(val browserContainer: BrowserContainer<MediaLibrar
         var oldAsc = true
         var newAsc = true
 
+        private fun descriptionChanged(oldItem: MediaWrapper, newItem: MediaWrapper): Boolean =
+            (compareDescription || newItem.location == NEW_DOWNLOADS_LOCATION) &&
+                oldItem.description != newItem.description
+
         override fun areContentsTheSame(oldItemPosition: Int, newItemPosition: Int):Boolean {
             val result = try {
                 val oldItem = oldList[oldItemPosition] as MediaWrapper
@@ -418,7 +422,7 @@ open class BaseBrowserAdapter(val browserContainer: BrowserContainer<MediaLibrar
                         (oldItem.playCount == newItem.playCount) &&
                         (oldItem.fileName == newItem.fileName) &&
                         (newItem.title == oldItem.title) &&
-                        (!compareDescription || oldItem.description == newItem.description)
+                        !descriptionChanged(oldItem, newItem)
             } catch (ignored: Exception) {
                 true
             }
@@ -429,7 +433,7 @@ open class BaseBrowserAdapter(val browserContainer: BrowserContainer<MediaLibrar
             try {
                 val oldItem = oldList[oldItemPosition] as MediaWrapper
                 val newItem = newList[newItemPosition] as MediaWrapper
-                if (compareDescription && oldItem.description != newItem.description) return null
+                if (descriptionChanged(oldItem, newItem)) return null
                 if (oldItem.displayTime != newItem.displayTime || oldItem.playCount != newItem.playCount) return UPDATE_PROGRESS
             } catch (ignored: Exception) {
             }
