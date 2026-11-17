@@ -18,10 +18,15 @@ def adb(*args):
 
 
 def wait_for_ui(predicate):
+    xml = ""
     for _ in range(20):
-        adb("shell", "uiautomator", "dump", "/sdcard/new-downloads-ui.xml")
-        xml = adb("shell", "cat", "/sdcard/new-downloads-ui.xml")
-        nodes = list(ET.fromstring(xml).iter("node"))
+        try:
+            adb("shell", "uiautomator", "dump", "/sdcard/new-downloads-ui.xml")
+            xml = adb("shell", "cat", "/sdcard/new-downloads-ui.xml")
+            nodes = list(ET.fromstring(xml).iter("node"))
+        except (subprocess.CalledProcessError, ET.ParseError):
+            time.sleep(1)
+            continue
         match = predicate(nodes)
         if match is not None:
             return match
@@ -39,9 +44,9 @@ def screenshot(name):
         subprocess.run(["adb", "exec-out", "screencap", "-p"], check=True, stdout=output)
 
 
-def seed_video(filename):
+def seed_video(filename, source=FIXTURE):
     target = f"/sdcard/Download/{filename}"
-    adb("push", str(FIXTURE), target)
+    adb("push", str(source), target)
     adb("shell", "am", "broadcast", "-a", "android.intent.action.MEDIA_SCANNER_SCAN_FILE",
         "--receiver-include-background", "-d", f"file://{target.replace('/sdcard/', '/storage/emulated/0/')}")
     for _ in range(20):
@@ -96,6 +101,46 @@ def recent_videos_ready(nodes):
     return None
 
 
+def export_embedded_subtitles():
+    fixture = Path("application/cast-tests/src/androidTest/assets/embedded-text.mkv")
+    seed_video("Embedded.mkv", fixture)
+    before = adb("shell", "sha256sum", "/sdcard/Download/Embedded.mkv").split()[0]
+    adb("shell", "input", "keyevent", "4")
+    tap(wait_for_ui(lambda nodes: next((node for node in nodes if node.get("text") == "New"), None)))
+
+    def movie_menu(nodes):
+        for node in nodes:
+            if node.get("resource-id", "").endswith(":id/browser_container") and "File: Embedded" in node.get("content-desc", ""):
+                return next((child for child in node.iter("node")
+                             if child.get("resource-id", "").endswith(":id/item_more")), None)
+        return None
+
+    tap(wait_for_ui(movie_menu))
+    tap(wait_for_ui(lambda nodes: next((node for node in nodes if node.get("text") == "Extract subtitles"), None)))
+    track = wait_for_ui(lambda nodes: next((node for node in nodes if node.get("text", "").endswith(" — SRT")), None))
+    screenshot("VLC-Plus-Extract-Subtitles.png")
+    tap(track)
+    save = wait_for_ui(lambda nodes: next(
+        (node for node in nodes if node.get("text", "").lower() == "save" and node.get("clickable") == "true"), None
+    ))
+    screenshot("VLC-Plus-Save-Subtitles.png")
+    tap(save)
+    for _ in range(30):
+        files = adb("shell", "find /sdcard/Download -maxdepth 1 -type f -name 'Embedded*.vtt'").splitlines()
+        for filename in files:
+            text = adb("shell", "cat", filename)
+            if text.startswith("WEBVTT") and "Second subtitle" in text:
+                assert "Embedded hello" in text
+                assert "00:00:00.200 --> 00:00:01.100" in text
+                assert "00:00:01.500 --> 00:00:02.600" in text
+                after = adb("shell", "sha256sum", "/sdcard/Download/Embedded.mkv").split()[0]
+                assert before == after, "Subtitle export changed the video"
+                print(f"Embedded subtitle export passed: {filename}")
+                return
+        time.sleep(1)
+    raise AssertionError("The subtitle file was not saved in the movie's Downloads folder")
+
+
 def main():
     OUTPUT.mkdir(exist_ok=True)
     adb("install", "-r", "-g", sys.argv[1])
@@ -116,6 +161,7 @@ def main():
         wait_for_ui(recent_videos_ready)
     finally:
         screenshot("VLC-Plus-New.png")
+    export_embedded_subtitles()
 
 
 if __name__ == "__main__":

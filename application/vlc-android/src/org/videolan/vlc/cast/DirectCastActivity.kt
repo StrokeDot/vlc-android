@@ -22,6 +22,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.videolan.medialibrary.MLServiceLocator
 import org.videolan.vlc.PlaybackService
+import org.videolan.vlc.R
 import org.videolan.vlc.gui.browser.EXTRA_MRL
 import org.videolan.vlc.gui.browser.FilePickerActivity
 import org.videolan.vlc.gui.browser.KEY_MEDIA
@@ -108,12 +109,14 @@ class DirectCastActivity : AppCompatActivity(), CastControlsView.Actions {
     override fun subtitles() {
         if (current.preparing) return
         AlertDialog.Builder(this).setTitle("Subtitles")
-            .setItems(arrayOf("Extract from movie", "Choose from movie folder", "Choose using Files", "Appearance & preview", "Off")) { _, index ->
+            .setItems(arrayOf(getString(R.string.use_embedded_subtitles), getString(R.string.extract_subtitles),
+                "Choose from movie folder", "Choose using Files", "Appearance & preview", "Off")) { _, index ->
                 when (index) {
                     0 -> openEmbeddedSubtitles()
-                    1 -> openMovieFolder()
-                    2 -> openSystemPicker()
-                    3 -> CastSubtitleAppearance.show(this) { if (current.connected) command(DirectCastService.STYLE) }
+                    1 -> movieUri()?.let { EmbeddedSubtitleExportDialog.show(this, it, intent.getStringExtra("title") ?: current.title) }
+                    2 -> openMovieFolder()
+                    3 -> openSystemPicker()
+                    4 -> CastSubtitleAppearance.show(this) { if (current.connected) command(DirectCastService.STYLE) }
                     else -> { pendingSubtitle = null; if (current.connected) command(DirectCastService.SUBTITLE); render() }
                 }
             }.show()

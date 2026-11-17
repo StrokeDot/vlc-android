@@ -92,6 +92,7 @@ import org.videolan.tools.removeFileScheme
 import org.videolan.vlc.BuildConfig
 import org.videolan.vlc.PlaybackService
 import org.videolan.vlc.R
+import org.videolan.vlc.cast.EmbeddedSubtitleExportDialog
 import org.videolan.vlc.databinding.DirectoryBrowserBinding
 import org.videolan.vlc.gui.AudioPlayerContainerActivity
 import org.videolan.vlc.gui.MainActivity
@@ -134,6 +135,7 @@ import org.videolan.vlc.util.ContextOption.CTX_APPEND
 import org.videolan.vlc.util.ContextOption.CTX_BAN_FOLDER
 import org.videolan.vlc.util.ContextOption.CTX_DELETE
 import org.videolan.vlc.util.ContextOption.CTX_DOWNLOAD_SUBTITLES
+import org.videolan.vlc.util.ContextOption.CTX_EXTRACT_SUBTITLES
 import org.videolan.vlc.util.ContextOption.CTX_FAV_ADD
 import org.videolan.vlc.util.ContextOption.CTX_FAV_REMOVE
 import org.videolan.vlc.util.ContextOption.CTX_FIND_METADATA
@@ -824,7 +826,11 @@ abstract class BaseBrowserFragment : MediaBrowserFragment<BrowserModel>(), IRefr
                     if (isMedia) addAll(CTX_ADD_TO_PLAYLIST, CTX_APPEND, CTX_INFORMATION, CTX_PLAY_ALL)
                     if (!isAudio && isMedia) add(CTX_PLAY_AS_AUDIO)
                     if (!isMedia) add(CTX_PLAY)
-                    if (isVideo) add(CTX_DOWNLOAD_SUBTITLES)
+                    if (isVideo) {
+                        add(CTX_DOWNLOAD_SUBTITLES)
+                        if (mw.uri.scheme in listOf("file", "content"))
+                            add(CTX_EXTRACT_SUBTITLES)
+                    }
                     if ((isVideo || mw.isPodcast) && mw.seen > 0L) add(ContextOption.CTX_MARK_AS_UNPLAYED)
                     if ((isVideo || mw.isPodcast) && mw.seen == 0L) add(ContextOption.CTX_MARK_AS_PLAYED)
                 }
@@ -886,6 +892,7 @@ abstract class BaseBrowserFragment : MediaBrowserFragment<BrowserModel>(), IRefr
 
             CTX_ADD_TO_PLAYLIST -> requireActivity().addToPlaylist(mw.tracks, SavePlaylistDialog.KEY_NEW_TRACKS)
             CTX_DOWNLOAD_SUBTITLES -> MediaUtils.getSubs(requireActivity(), mw)
+            CTX_EXTRACT_SUBTITLES -> EmbeddedSubtitleExportDialog.show(requireActivity(), mw.uri, mw.title)
             CTX_FAV_REMOVE -> lifecycleScope.launch(Dispatchers.IO) { browserFavRepository.deleteBrowserFav(mw.uri) }
             CTX_ADD_SCANNED -> addToScannedFolders(mw)
             CTX_FIND_METADATA -> {
