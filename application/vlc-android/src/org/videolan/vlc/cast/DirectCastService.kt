@@ -133,7 +133,12 @@ class DirectCastService : Service() {
                             status = { receiveStatus(it) },
                             failed = { failure(it) },
                             volumeChanged = { update { current.copy(volume = it) } },
-                            styleFailed = { message -> update { current.copy(error = message) } })
+                            styleFailed = { message -> update { current.copy(error = message) } },
+                            reconnecting = { attempt, error ->
+                                Log.w("VLCPlus/Cast", "Cast control connection lost, reconnecting ($attempt/3)", error)
+                                update { if (current.active) current.copy(connected = false,
+                                    message = "Reconnecting to $device…", error = null) else current }
+                            })
                         synchronized(resources) {
                             if (destroyed || !ctx.isActive) { http.close(); client.close(); return@launch }
                             server = http; connection = client

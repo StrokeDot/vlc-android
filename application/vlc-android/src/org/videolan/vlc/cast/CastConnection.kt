@@ -5,6 +5,7 @@ import kotlinx.coroutines.*
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.Closeable
+import java.io.IOException
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
@@ -25,7 +26,8 @@ internal class CastConnection(
     private val status: (JSONObject) -> Unit,
     private val failed: (String) -> Unit,
     private val volumeChanged: (Double) -> Unit = {},
-    private val styleFailed: (String) -> Unit = {}
+    private val styleFailed: (String) -> Unit = {},
+    private val reconnecting: (Int, IOException) -> Unit = { _, _ -> }
 ) : Closeable {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val request = AtomicInteger()
@@ -37,6 +39,10 @@ internal class CastConnection(
     @Volatile private var mediaSession: Long? = null
     private var receiverSession: String? = null
     private var launching = false
+    @Volatile private var recovering = false
+    private var recoveryAttempts = 0
+    private var activeMediaUrl: String? = null
+    private var deferredLoad: (() -> Unit)? = null // Protected by writeLock.
     private data class PendingLoad(val url: String, val previousSession: Long, val requestId: Int, val started: Long)
     @Volatile private var pendingLoad: PendingLoad? = null
     private val styleRequests = HashSet<Int>() // Protected by writeLock; style rejection never ends playback.
@@ -54,68 +60,120 @@ internal class CastConnection(
                     override fun checkServerTrusted(c: Array<X509Certificate>, a: String) = Unit
                 }
                 val tls = SSLContext.getInstance("TLS").apply { init(null, arrayOf<TrustManager>(trust), SecureRandom()) }
-                val raw = Socket().also { socket = it }
-                raw.connect(InetSocketAddress(address, port), 10000)
-                raw.soTimeout = 15000
-                val secure = tls.socketFactory.createSocket(raw, address.hostAddress, port, true) as SSLSocket
-                socket = secure
-                secure.startHandshake()
-                secure.soTimeout = 30000
-                connect("receiver-0")
-                send("receiver-0", RECEIVER, JSONObject().put("type", "GET_STATUS"))
-                launch {
+                while (isActive && !closed) {
+                    try {
+                        receive(tls)
+                        break
+                    } catch (e: IOException) {
+                        if (closed || !isActive) break
+                        if (mediaSession == null || pendingLoad != null || recoveryAttempts >= 3) throw e
+                        recovering = true
+                        recoveryAttempts++
+                        synchronized(writeLock) { styleRequests.clear() }
+                        reconnecting(recoveryAttempts, e)
+                        delay(1000L shl (recoveryAttempts - 1))
+                    }
+                }
+            } catch (e: Exception) {
+                if (!closed && e !is CancellationException)
+                    failed(if (recovering) "Lost connection to the TV. Select it again to resume casting."
+                        else e.message ?: "Casting connection failed")
+            } finally { close() }
+        }
+    }
+
+    private suspend fun receive(tls: SSLContext) = coroutineScope {
+        var heartbeat: Job? = null
+        try {
+            ensureActive()
+            val raw = Socket()
+            socket = raw
+            // close() may race with a reconnect while a user disconnects.
+            if (closed) return@coroutineScope
+            raw.connect(InetSocketAddress(address, port), if (recovering) 5000 else 10000)
+            raw.soTimeout = if (recovering) 5000 else 15000
+            val secure = tls.socketFactory.createSocket(raw, address.hostAddress, port, true) as SSLSocket
+            socket = secure
+            if (closed) return@coroutineScope
+            secure.startHandshake()
+            secure.soTimeout = if (recovering) 10000 else 30000
+            connect("receiver-0")
+            send("receiver-0", RECEIVER, JSONObject().put("type", "GET_STATUS"))
+            heartbeat = launch {
+                try {
                     while (isActive) {
                         delay(5000)
                         val waiting = pendingLoad
                         if (waiting != null && System.nanoTime() - waiting.started > 30_000_000_000L) {
                             failed("The receiver did not start this video. Tap Convert or use VLC casting.")
-                            close(); return@launch
+                            close()
+                            return@launch
                         }
                         send("receiver-0", HEARTBEAT, JSONObject().put("type", "PING"))
-                        transport?.let { send(it, MEDIA, JSONObject().put("type", "GET_STATUS")) }
+                        if (!recovering) transport?.let { send(it, MEDIA, JSONObject().put("type", "GET_STATUS")) }
                     }
+                } catch (_: IOException) {
+                    // Wake the reader so the same bounded recovery handles write failures.
+                    try { secure.close() } catch (_: IOException) { }
                 }
-                messages@ while (isActive && !closed) {
-                    val frame = CastFrame.read(secure.inputStream)
-                    val data = JSONObject(frame.payload)
-                    when (frame.namespace) {
-                        HEARTBEAT -> if (data.optString("type") == "PING") send("receiver-0", HEARTBEAT, JSONObject().put("type", "PONG"))
-                        RECEIVER -> receiverStatus(data)
-                        MEDIA -> when (data.optString("type")) {
-                            "MEDIA_STATUS" -> {
-                                synchronized(writeLock) { styleRequests.remove(data.optInt("requestId", -1)) }
-                                val media = data.optJSONArray("status")?.optJSONObject(0)
-                                val waiting = pendingLoad
-                                if (media?.optString("idleReason") != "ERROR" && waiting != null && media != null &&
-                                    !CastSessionPolicy.belongsToLoad(waiting.url, media.optJSONObject("media")?.optString("contentId") ?: "",
-                                        data.optInt("requestId", -1) == waiting.requestId, waiting.previousSession, media.optLong("mediaSessionId", -1)))
-                                    continue@messages
-                                when (CastSessionPolicy.media(media?.optString("playerState") ?: "",
-                                    media?.optString("idleReason") ?: "", waiting != null, mediaSession != null)) {
-                                    CastSessionPolicy.UPDATE -> if (media != null) {
+            }
+            messages@ while (isActive && !closed) {
+                val frame = CastFrame.read(secure.inputStream)
+                val data = JSONObject(frame.payload)
+                when (frame.namespace) {
+                    HEARTBEAT -> if (data.optString("type") == "PING") send("receiver-0", HEARTBEAT, JSONObject().put("type", "PONG"))
+                    RECEIVER -> receiverStatus(data)
+                    MEDIA -> when (data.optString("type")) {
+                        "MEDIA_STATUS" -> {
+                            synchronized(writeLock) { styleRequests.remove(data.optInt("requestId", -1)) }
+                            val media = data.optJSONArray("status")?.optJSONObject(0)
+                            val waiting = pendingLoad
+                            if (recovering && media != null &&
+                                (media.optLong("mediaSessionId", -1) != mediaSession ||
+                                    media.optJSONObject("media")?.optString("contentId")?.let { it.isNotEmpty() && it != activeMediaUrl } == true)) {
+                                endSession()
+                                return@coroutineScope
+                            }
+                            if (media?.optString("idleReason") != "ERROR" && waiting != null && media != null &&
+                                !CastSessionPolicy.belongsToLoad(waiting.url, media.optJSONObject("media")?.optString("contentId") ?: "",
+                                    data.optInt("requestId", -1) == waiting.requestId, waiting.previousSession, media.optLong("mediaSessionId", -1)))
+                                continue@messages
+                            when (CastSessionPolicy.media(media?.optString("playerState") ?: "",
+                                media?.optString("idleReason") ?: "", waiting != null, mediaSession != null)) {
+                                CastSessionPolicy.UPDATE -> if (media != null) {
+                                    val nextLoad = synchronized(writeLock) {
                                         if (media.has("mediaSessionId")) mediaSession = media.getLong("mediaSessionId")
-                                        pendingLoad = null; status(media)
+                                        activeMediaUrl = waiting?.url ?: activeMediaUrl
+                                        recovering = false
+                                        recoveryAttempts = 0
+                                        pendingLoad = null
+                                        deferredLoad.also { deferredLoad = null }
                                     }
-                                    CastSessionPolicy.ERROR -> throw IllegalStateException("The receiver cannot play this file. Tap Convert to prepare compatible audio, or use VLC casting.")
-                                    CastSessionPolicy.END -> {
-                                        status(media ?: JSONObject().put("playerState", "IDLE").put("idleReason", "CANCELLED"))
-                                        close()
-                                    }
+                                    secure.soTimeout = 30000
+                                    status(media)
+                                    nextLoad?.invoke()
+                                }
+                                CastSessionPolicy.ERROR -> throw IllegalStateException("The receiver cannot play this file. Tap Convert to prepare compatible audio, or use VLC casting.")
+                                CastSessionPolicy.END -> {
+                                    status(media ?: JSONObject().put("playerState", "IDLE").put("idleReason", "CANCELLED"))
+                                    close()
                                 }
                             }
-                            "INVALID_REQUEST" -> {
-                                if (synchronized(writeLock) { styleRequests.remove(data.optInt("requestId", -1)) }) {
-                                    styleFailed("The TV could not apply this subtitle style.")
-                                } else throw IllegalStateException("The receiver could not apply this command.")
-                            }
-                            "LOAD_FAILED", "LOAD_CANCELLED" -> throw IllegalStateException("The receiver could not play this file. Tap Convert to prepare compatible audio, or use VLC casting.")
                         }
-                        CONNECTION -> if (data.optString("type") == "CLOSE") throw IllegalStateException("The receiver closed the casting connection")
+                        "INVALID_REQUEST" -> {
+                            if (synchronized(writeLock) { styleRequests.remove(data.optInt("requestId", -1)) }) {
+                                styleFailed("The TV could not apply this subtitle style.")
+                            } else throw IllegalStateException("The receiver could not apply this command.")
+                        }
+                        "LOAD_FAILED", "LOAD_CANCELLED" -> throw IllegalStateException("The receiver could not play this file. Tap Convert to prepare compatible audio, or use VLC casting.")
                     }
+                    CONNECTION -> if (data.optString("type") == "CLOSE") throw IllegalStateException("The receiver closed the casting connection")
                 }
-            } catch (e: Exception) {
-                if (!closed) failed(e.message ?: "Casting connection failed")
-            } finally { close() }
+            }
+        } finally {
+            heartbeat?.cancel()
+            try { socket?.close() } catch (_: IOException) { }
+            socket = null
         }
     }
 
@@ -129,6 +187,15 @@ internal class CastConnection(
             val app = apps.getJSONObject(i)
             if (app.optString("appId") != DEFAULT_APP) continue
             val id = app.optString("transportId")
+            if (recovering) {
+                if (id != transport || app.optString("sessionId") != receiverSession) {
+                    endSession()
+                } else {
+                    connect(id)
+                    send(id, MEDIA, JSONObject().put("type", "GET_STATUS"))
+                }
+                return
+            }
             if (id.isNotEmpty() && id != transport) {
                 transport = id
                 receiverSession = app.optString("sessionId")
@@ -148,17 +215,34 @@ internal class CastConnection(
         }
     }
 
+    private fun endSession() {
+        status(JSONObject().put("playerState", "IDLE").put("idleReason", "CANCELLED"))
+        close()
+    }
+
     private fun connect(destination: String) = send(destination, CONNECTION, JSONObject().put("type", "CONNECT").put("origin", JSONObject()).put("userAgent", "VLC Plus"))
 
     private fun send(destination: String, namespace: String, data: JSONObject) {
         synchronized(writeLock) {
             if (closed) return
             data.put("requestId", request.incrementAndGet())
-            CastFrame.write(socket?.getOutputStream() ?: return, sender, destination, namespace, data.toString())
+            try {
+                CastFrame.write(socket?.getOutputStream() ?: return, sender, destination, namespace, data.toString())
+            } catch (e: IOException) {
+                if (mediaSession == null || pendingLoad != null) throw e
+                // Closing the failed channel transfers recovery to the reader.
+                try { socket?.close() } catch (_: IOException) { }
+            }
         }
     }
 
-    fun load(url: String, mime: String, title: String, positionMs: Long, subtitleUrl: String?, autoplay: Boolean = true, durationMs: Long = 0, style: CastSubtitleStyle = CastSubtitleStyle()) {
+    fun load(url: String, mime: String, title: String, positionMs: Long, subtitleUrl: String?, autoplay: Boolean = true, durationMs: Long = 0, style: CastSubtitleStyle = CastSubtitleStyle()): Unit = synchronized(writeLock) {
+        if (closed) return
+        if (recovering) {
+            // A conversion may finish while the control channel reconnects.
+            deferredLoad = { load(url, mime, title, positionMs, subtitleUrl, autoplay, durationMs, style) }
+            return
+        }
         val media = JSONObject().put("contentId", url).put("contentType", mime).put("streamType", "BUFFERED")
             .put("metadata", JSONObject().put("metadataType", 0).put("title", title))
         if (durationMs > 0) media.put("duration", durationMs / 1000.0)
@@ -172,13 +256,16 @@ internal class CastConnection(
             media.put("textTrackStyle", JSONObject(style.castStyle()))
             command.put("activeTrackIds", JSONArray().put(1))
         }
-        synchronized(writeLock) {
-            pendingLoad = PendingLoad(url, mediaSession ?: -1, request.get() + 1, System.nanoTime())
-            transport?.let { send(it, MEDIA, command) }
-        }
+        pendingLoad = PendingLoad(url, mediaSession ?: -1, request.get() + 1, System.nanoTime())
+        transport?.let { send(it, MEDIA, command) }
+        Unit
     }
 
     fun command(type: String, positionMs: Long? = null, playing: Boolean = true) {
+        if (recovering) {
+            if (type == "STOP") close()
+            return
+        }
         val id = mediaSession ?: return
         val data = JSONObject().put("type", type).put("mediaSessionId", id)
         receiverSession?.let { data.put("sessionId", it) }
@@ -188,6 +275,7 @@ internal class CastConnection(
     }
 
     fun setTextStyle(style: CastSubtitleStyle) {
+        if (recovering) return
         val id = mediaSession ?: return
         synchronized(writeLock) {
             val target = transport ?: return
@@ -198,6 +286,7 @@ internal class CastConnection(
     }
 
     fun setVolume(level: Double) {
+        if (recovering) return
         send("receiver-0", RECEIVER, JSONObject().put("type", "SET_VOLUME")
             .put("volume", JSONObject().put("level", level.coerceIn(0.0, 1.0)).put("muted", false)))
     }
