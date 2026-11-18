@@ -108,7 +108,9 @@ class CastPreparationDeviceTest {
         try {
             val input = File(folder, name)
             instrumentation.context.assets.open(name).use { source -> input.outputStream().use { source.copyTo(it) } }
-            val prepared = CastPreparation.prepare(context, Uri.fromFile(input), folder, forceAudio, {}, {})
+            val prepared = if (forceAudio)
+                CastAudioPreparation.prepare(context, Uri.fromFile(input), folder, {}, {})
+            else CastPreparation.prepare(context, Uri.fromFile(input), folder, false, {}, {})
             assertEquals("video/mp4", prepared.mime)
             assertNotEquals(input.path, prepared.file.path)
             assertTrue(prepared.file.length() > 0)
@@ -116,12 +118,27 @@ class CastPreparationDeviceTest {
         } finally { folder.deleteRecursively() }
     }
 
-    @Test fun audioConversionPreservesVideoSamplesAndSeekTimeline() = fixture("cast-fixture.mp4", true) { input, output ->
+    @Test fun compatibleAacPreparationCopiesAudioAndPreservesSeekTimeline() = fixture("cast-fixture.mp4", true) { input, output ->
         assertEquals(samples(input, "video/"), samples(output, "video/"))
+        assertEquals("Compatible AAC samples must be copied without another lossy encode",
+            samples(input, "audio/"), samples(output, "audio/"))
         val audio = samples(output, "audio/")
         assertEquals("audio/mp4a-latm", audio.mime)
         assertTrue(audio.count > 50)
         assertTrue(audio.last - audio.first > 1_700_000)
+    }
+
+    @Test fun surroundAacStillConvertsToAudibleStereo() = fixture("cast-aac-surround.mp4", true) { input, output ->
+        assertSameVideo(input, output)
+        val extractor = MediaExtractor()
+        try {
+            extractor.setDataSource(output.path)
+            val audio = (0 until extractor.trackCount).first {
+                extractor.getTrackFormat(it).getString(MediaFormat.KEY_MIME) == "audio/mp4a-latm"
+            }
+            assertEquals(2, extractor.getTrackFormat(audio).getInteger(MediaFormat.KEY_CHANNEL_COUNT))
+        } finally { extractor.release() }
+        assertTrue("Converted surround audio must be audible", decoded(output, "audio/").peak > 256)
     }
 
     @Test fun containerPreparationCopiesVideoAndCompatibleAudio() = fixture("cast-fixture.mkv", false) { input, output ->

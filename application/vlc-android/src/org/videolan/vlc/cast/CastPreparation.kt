@@ -80,19 +80,44 @@ internal object CastPreparation {
             val videoMime = probe.getTrackFormat(video).getString(MediaFormat.KEY_MIME)
             require(videoMime in listOf("video/avc", "video/hevc", "video/mp4v-es")) { "This video format needs VLC casting" }
             val audioMime = audio?.let { audioSource.getTrackFormat(it).getString(MediaFormat.KEY_MIME) }
-            if (audio != null && (convertAudio || audioMime != "audio/mp4a-latm")) {
+            if (audio != null && (audioMime != "audio/mp4a-latm" ||
+                    convertAudio && !canCopyAac(audioSource.getTrackFormat(audio)))) {
                 progress("Preparing audio for TV… 0%")
                 try { convert(input, output, video, audio, rotation, check, progress, pcmAudio) }
                 catch (e: java.util.concurrent.CancellationException) { throw e }
                 catch (e: Exception) { throw AudioUnsupported(input, e) }
             } else {
                 progress("Preparing video for TV… 0%")
+                val started = SystemClock.elapsedRealtime()
                 remux(probe, output, video, audio, rotation, check, progress)
+                Log.i("VLCPlus/CastPerf", "path=sample-copy-remux elapsedMs=${SystemClock.elapsedRealtime() - started} inputBytes=${input.length()}")
             }
         } finally { probe.release() }
         check()
         return Prepared(output, "video/mp4")
     }
+
+    /** Only bypass conversion for unambiguous, commonly supported AAC-LC configurations. */
+    private fun canCopyAac(format: MediaFormat): Boolean = runCatching {
+        val channels = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+        if (channels !in 1..2) return@runCatching false
+        val frequencyIndex = when (format.getInteger(MediaFormat.KEY_SAMPLE_RATE)) {
+            48000 -> 3
+            44100 -> 4
+            else -> return@runCatching false
+        }
+        if (format.containsKey(MediaFormat.KEY_AAC_PROFILE) &&
+            format.getInteger(MediaFormat.KEY_AAC_PROFILE) != MediaCodecInfo.CodecProfileLevel.AACObjectLC) return@runCatching false
+        val config = format.getByteBuffer("csd-0")?.duplicate() ?: return@runCatching false
+        if (config.remaining() < 2) return@runCatching false
+        val first = config.get().toInt() and 255
+        val second = config.get().toInt() and 255
+        val objectType = first ushr 3
+        val configuredFrequency = ((first and 7) shl 1) or (second ushr 7)
+        val configuredChannels = (second ushr 3) and 15
+        objectType == MediaCodecInfo.CodecProfileLevel.AACObjectLC &&
+            configuredFrequency == frequencyIndex && configuredChannels == channels
+    }.getOrDefault(false)
 
     /** Attach finished AAC; the caller only supplies a file, this method owns its extractor. */
     fun withAudio(input: File, compatibleAudio: File, directory: File, check: () -> Unit,
