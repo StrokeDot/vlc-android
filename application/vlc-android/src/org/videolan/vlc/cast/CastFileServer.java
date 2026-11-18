@@ -8,6 +8,7 @@ import java.nio.channels.ServerSocketChannel;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicLong;
 
 /** Seekable, constant-memory local file delivery. Only unguessable registered URLs exist. */
 public final class CastFileServer implements Closeable {
@@ -36,6 +37,15 @@ public final class CastFileServer implements Closeable {
     private final Source source;
     private final String mime,secret=UUID.randomUUID().toString();
     private volatile byte[] subtitles=new byte[0];
+    private final AtomicLong mediaGets=new AtomicLong();
+    private final AtomicLong mediaHeads=new AtomicLong();
+    private final AtomicLong mediaBytes=new AtomicLong();
+    private final AtomicLong mediaReadFailures=new AtomicLong();
+    /** Aggregate local-only diagnostics: no file names, tokens or user URLs. */
+    public long mediaGetCount(){return mediaGets.get();}
+    public long mediaHeadCount(){return mediaHeads.get();}
+    public long mediaBytesServed(){return mediaBytes.get();}
+    public long mediaFailureCount(){return mediaReadFailures.get();}
     private final Set<Socket> sockets=Collections.newSetFromMap(new ConcurrentHashMap<Socket,Boolean>());
     private final ExecutorService workers=new ThreadPoolExecutor(1,4,30,TimeUnit.SECONDS,new SynchronousQueue<Runnable>());
     private volatile boolean closed;
@@ -70,6 +80,7 @@ public final class CastFileServer implements Closeable {
             if(!media&&!sub){head(out,404,"Not Found",0,null,null,origin);return;}
             if(request[0].equals("OPTIONS")){head(out,204,"No Content",0,null,null,origin);return;}
             if(!request[0].equals("GET")&&!request[0].equals("HEAD")){head(out,405,"Method Not Allowed",0,null,null,origin);return;}
+            if(media){if(request[0].equals("GET"))mediaGets.incrementAndGet();else mediaHeads.incrementAndGet();}
             byte[] text=subtitles;long length=media?source.length():text.length,start=0,end=length-1;boolean partial=false;
             String range=headers.get("range");
             if(range!=null){
@@ -93,16 +104,16 @@ public final class CastFileServer implements Closeable {
                         while(sent<count&&!closed){
                             long n=file.transferTo(start+sent,Math.min(8L*1024*1024,count-sent),socket.getChannel());
                             if(n<=0)break; // Some providers/platforms need the portable copy path.
-                            sent+=n;
+                            sent+=n;mediaBytes.addAndGet(n);
                         }
                     }
                 }
                 if(sent<count)try(InputStream input=source.open(start+sent)){
                 byte[] buf=new byte[128*1024];long left=count-sent;
-                while(left>0&&!closed){int n=input.read(buf,0,(int)Math.min(buf.length,left));if(n<0)break;out.write(buf,0,n);left-=n;}
+                while(left>0&&!closed){int n=input.read(buf,0,(int)Math.min(buf.length,left));if(n<0)break;out.write(buf,0,n);left-=n;mediaBytes.addAndGet(n);}
             }}else if(count>0)out.write(text,(int)start,(int)count);
             out.flush();
-        }catch(IOException ignored){}finally{sockets.remove(socket);}
+        }catch(IOException ignored){mediaReadFailures.incrementAndGet();}finally{sockets.remove(socket);}
     }
     private static String line(InputStream input)throws IOException{
         ByteArrayOutputStream out=new ByteArrayOutputStream();int c;

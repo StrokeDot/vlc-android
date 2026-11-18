@@ -81,6 +81,7 @@ import org.videolan.tools.putSingle
 import org.videolan.tools.retrieveParent
 import org.videolan.vlc.PlaybackService
 import org.videolan.vlc.R
+import org.videolan.vlc.cast.EmbeddedSubtitleExportDialog
 import org.videolan.vlc.databinding.VideoGridBinding
 import org.videolan.vlc.gui.SecondaryActivity
 import org.videolan.vlc.gui.browser.MediaBrowserFragment
@@ -127,6 +128,7 @@ import org.videolan.vlc.util.ContextOption.CTX_APPEND
 import org.videolan.vlc.util.ContextOption.CTX_BAN_FOLDER
 import org.videolan.vlc.util.ContextOption.CTX_DELETE
 import org.videolan.vlc.util.ContextOption.CTX_DOWNLOAD_SUBTITLES
+import org.videolan.vlc.util.ContextOption.CTX_EXTRACT_SUBTITLES
 import org.videolan.vlc.util.ContextOption.CTX_FAV_ADD
 import org.videolan.vlc.util.ContextOption.CTX_FAV_REMOVE
 import org.videolan.vlc.util.ContextOption.CTX_FIND_METADATA
@@ -625,6 +627,7 @@ class VideoGridFragment : MediaBrowserFragment<VideosViewModel>(), SwipeRefreshL
                 CTX_SET_RINGTONE -> requireActivity().setRingtone(media)
                 CTX_PLAY_NEXT -> MediaUtils.insertNext(requireActivity(), media.tracks)
                 CTX_DOWNLOAD_SUBTITLES -> MediaUtils.getSubs(requireActivity(), media)
+                CTX_EXTRACT_SUBTITLES -> EmbeddedSubtitleExportDialog.show(requireActivity(), media.uri, media.title)
                 CTX_ADD_TO_PLAYLIST -> requireActivity().addToPlaylist(media.tracks, SavePlaylistDialog.KEY_NEW_TRACKS)
                 CTX_FIND_METADATA -> {
                     val intent = Intent().apply {
@@ -726,6 +729,7 @@ class VideoGridFragment : MediaBrowserFragment<VideosViewModel>(), SwipeRefreshL
                     }
                     is MediaWrapper -> {
                         val flags = createCtxVideoFlags().apply {
+                            if (item.uri.scheme in listOf("file", "content")) add(CTX_EXTRACT_SUBTITLES)
                             if (item.isFavorite) add(CTX_FAV_REMOVE) else add(CTX_FAV_ADD)
                             if (item.seen > 0) add(CTX_MARK_AS_UNPLAYED) else add(CTX_MARK_AS_PLAYED)
                             if (item.time != 0L) add(CTX_PLAY_FROM_START)

@@ -27,6 +27,12 @@ public final class CastCoreTest {
         check(CastSessionPolicy.media("","",false,false)==CastSessionPolicy.IGNORE);
         check(CastSessionPolicy.media("IDLE","ERROR",true,true)==CastSessionPolicy.ERROR);
         check(CastSessionPolicy.media("PLAYING","",true,false)==CastSessionPolicy.UPDATE);
+        check(CastSessionPolicy.playbackIntent("BUFFERING",true,false));
+        check(CastSessionPolicy.playbackIntent("BUFFERING",false,false)==false);
+        check(CastSessionPolicy.playbackIntent("PAUSED",true,false)==false);
+        check(CastSessionPolicy.playbackIntent("PAUSED",true,true));
+        check(CastSessionPolicy.playbackIntent("PLAYING",false,false));
+        check(CastSessionPolicy.playbackIntent("IDLE",true,false));
         check(!CastSessionPolicy.belongsToLoad("new","other",false,-1,1));
         check(!CastSessionPolicy.belongsToLoad("same","same",false,5,5));
         check(CastSessionPolicy.belongsToLoad("same","same",true,5,5));
@@ -117,9 +123,11 @@ public final class CastCoreTest {
             HttpURLConnection c=request(server.mediaUrl(),"HEAD",null);
             check(c.getResponseCode()==200&&c.getContentLengthLong()==large.length());
             check(opens[0]==0);c.disconnect();
+            check(server.mediaHeadCount()==1 && server.mediaGetCount()==0);
             c=request(server.mediaUrl(),"GET","bytes=1024-1026");
             check(c.getResponseCode()==206&&Arrays.equals(c.getInputStream().readAllBytes(),new byte[]{42,43,44}));
             check(opens[0]==1);c.disconnect();
+            check(server.mediaGetCount()==1 && server.mediaBytesServed()==3);
         }
 
         File media = File.createTempFile("cast-core", ".mp4");

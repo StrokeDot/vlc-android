@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="extract_subtitles">Extract subtitles</string>
+    <string name="subtitle_export_scanning">Looking for embedded text subtitles…</string>
+    <string name="subtitle_export_choose">Choose a subtitle track to save as a WebVTT (.vtt) file.</string>
+    <string name="subtitle_export_empty">No embedded text subtitles were found. PGS and VobSub image subtitles cannot be exported as text.</string>
+    <string name="subtitle_export_saving">Extracting and saving subtitles…</string>
+    <string name="subtitle_export_saved">Subtitles saved. You can choose the file when casting.</string>
+    <string name="subtitle_export_failed">Could not save the subtitles. Choose a writable folder and try again.</string>
+    <string name="subtitle_export_no_picker">No app is available to choose where to save the subtitle file.</string>
+    <string name="use_embedded_subtitles">Use embedded subtitles</string>
+</resources>
