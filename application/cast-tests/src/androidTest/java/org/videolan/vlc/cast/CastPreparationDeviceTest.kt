@@ -28,10 +28,10 @@ class CastPreparationDeviceTest {
             val data = ByteBuffer.allocate(1024 * 1024)
             val digest = MessageDigest.getInstance("SHA-256")
             var count = 0; var first = -1L; var last = -1L
-            while (extractor.sampleTime >= 0) {
+            while (extractor.sampleTrackIndex >= 0) {
                 data.clear(); val n = extractor.readSampleData(data, 0); if (n < 0) break
                 data.position(0); data.limit(n); digest.update(data)
-                if (first < 0) first = extractor.sampleTime
+                if (count == 0) first = extractor.sampleTime
                 last = extractor.sampleTime; count++; extractor.advance()
             }
             return Samples(count, digest.digest().joinToString("") { "%02x".format(it) }, first, last, mime)
@@ -118,10 +118,8 @@ class CastPreparationDeviceTest {
         } finally { folder.deleteRecursively() }
     }
 
-    @Test fun compatibleAacPreparationCopiesAudioAndPreservesSeekTimeline() = fixture("cast-fixture.mp4", true) { input, output ->
+    @Test fun audioConversionPreservesVideoSamplesAndSeekTimeline() = fixture("cast-fixture.mp4", true) { input, output ->
         assertEquals(samples(input, "video/"), samples(output, "video/"))
-        assertEquals("Compatible AAC samples must be copied without another lossy encode",
-            samples(input, "audio/"), samples(output, "audio/"))
         val audio = samples(output, "audio/")
         assertEquals("audio/mp4a-latm", audio.mime)
         assertTrue(audio.count > 50)
@@ -141,9 +139,10 @@ class CastPreparationDeviceTest {
         assertTrue("Converted surround audio must be audible", decoded(output, "audio/").peak > 256)
     }
 
-    @Test fun containerPreparationCopiesVideoAndCompatibleAudio() = fixture("cast-fixture.mkv", false) { input, output ->
+    @Test fun compatibleAacPreparationCopiesAudioAndPreservesSeekTimeline() = fixture("cast-fixture.mkv", true) { input, output ->
         assertEquals(samples(input, "video/"), samples(output, "video/"))
-        assertEquals(samples(input, "audio/").hash, samples(output, "audio/").hash)
+        assertEquals("Compatible AAC samples must be copied without another lossy encode",
+            samples(input, "audio/"), samples(output, "audio/"))
     }
 
     @Test fun dolbyMatroskaKeepsVideoAndProducesRealStereoAudio() {

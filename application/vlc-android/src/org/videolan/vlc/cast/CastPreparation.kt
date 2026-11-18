@@ -81,7 +81,7 @@ internal object CastPreparation {
             require(videoMime in listOf("video/avc", "video/hevc", "video/mp4v-es")) { "This video format needs VLC casting" }
             val audioMime = audio?.let { audioSource.getTrackFormat(it).getString(MediaFormat.KEY_MIME) }
             if (audio != null && (audioMime != "audio/mp4a-latm" ||
-                    convertAudio && !canCopyAac(audioSource.getTrackFormat(audio)))) {
+                    convertAudio && !canCopyAac(input, audio, audioSource.getTrackFormat(audio)))) {
                 progress("Preparing audio for TV… 0%")
                 try { convert(input, output, video, audio, rotation, check, progress, pcmAudio) }
                 catch (e: java.util.concurrent.CancellationException) { throw e }
@@ -98,7 +98,7 @@ internal object CastPreparation {
     }
 
     /** Only bypass conversion for unambiguous, commonly supported AAC-LC configurations. */
-    private fun canCopyAac(format: MediaFormat): Boolean = runCatching {
+    private fun canCopyAac(input: File, track: Int, format: MediaFormat): Boolean = runCatching {
         val channels = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
         if (channels !in 1..2) return@runCatching false
         val frequencyIndex = when (format.getInteger(MediaFormat.KEY_SAMPLE_RATE)) {
@@ -115,8 +115,16 @@ internal object CastPreparation {
         val objectType = first ushr 3
         val configuredFrequency = ((first and 7) shl 1) or (second ushr 7)
         val configuredChannels = (second ushr 3) and 15
-        objectType == MediaCodecInfo.CodecProfileLevel.AACObjectLC &&
-            configuredFrequency == frequencyIndex && configuredChannels == channels
+        if (objectType != MediaCodecInfo.CodecProfileLevel.AACObjectLC ||
+            configuredFrequency != frequencyIndex || configuredChannels != channels) return@runCatching false
+        // The existing MP4 writer normalizes negative timestamps. Keep the
+        // established conversion path when a source needs AAC priming samples.
+        val audio = MediaExtractor()
+        try {
+            audio.setDataSource(input.path)
+            audio.selectTrack(track)
+            audio.sampleTrackIndex >= 0 && audio.sampleTime >= 0
+        } finally { audio.release() }
     }.getOrDefault(false)
 
     /** Attach finished AAC; the caller only supplies a file, this method owns its extractor. */
