@@ -37,9 +37,12 @@ internal object CastInput {
                         val asset = context.contentResolver.openAssetFileDescriptor(uri, "r") ?: error("The video cannot be opened")
                         try {
                             val input = asset.createInputStream()
-                            try { input.channel.position(asset.startOffset + offset) }
+                            val base = asset.startOffset + offset
+                            try { input.channel.position(base) }
                             catch (e: Exception) { input.close(); throw e }
-                            return object : InputStream() {
+                            return object : CastFileServer.ChannelledStream() {
+                                override fun channel(): java.nio.channels.FileChannel = input.channel
+                                override fun position() = base
                                 override fun read() = input.read()
                                 override fun read(bytes: ByteArray, start: Int, count: Int) = input.read(bytes, start, count)
                                 override fun close() { try { input.close() } finally { runCatching { asset.close() } } }

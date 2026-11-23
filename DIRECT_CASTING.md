@@ -41,8 +41,11 @@ claiming that it matches XPlayer or fixes the original VLC slowdown.
 ## Validation
 
 `bash buildsystem/test-direct-cast.sh` exercises protocol framing, receiver
-termination policy, actual HTTP range/HEAD/CORS/authorization behavior and
-subtitle conversion without Android.
+termination policy, actual HTTP range/HEAD/CORS/authorization behavior,
+subtitle conversion and the surround downmix without Android.
+`buildsystem/tests/CastReconnectCheck.kt` and `CastCommandCheck.kt` drive
+`CastConnection` against a local TLS fake receiver (reconnection, rejected
+commands, cancelled replacement loads and Stop delivery).
 
 The opt-in `-PcastCodecTests=true` module compiles the production preparation,
 input and controller sources into an isolated Android test app. CI checks direct
@@ -64,6 +67,36 @@ Newly selected subtitle files show the same preview before they are loaded.
 Cancel leaves the previous subtitle/settings in place. Actual font rendering can
 vary with the receiver's installed fonts.
 
+## One controller for every Cast button
+
+The library toolbar Cast button now opens the same controller as the player.
+Previously, with exactly one receiver on the network, it silently started the
+original LibVLC casting; videos then opened the old remote screen and the new
+controller showed every button grayed out while the TV kept playing.
+
+- Library Cast with a video loaded: opens the controller for that video.
+- Library Cast with nothing playing: choose the TV; the next video you open
+  casts to it automatically.
+- If the original VLC casting is already running, the controller shows it and
+  its play/pause, seek, ±15 s, volume and Stop work through VLC's renderer.
+  Choosing a device switches to direct casting at the same position.
+- **Use VLC casting** remains the explicit way to open the old renderer list.
+
+Session robustness:
+
+- A play/pause/seek the receiver rejects (common while buffering) is reported
+  and resynchronised instead of ending the cast.
+- A replacement LOAD (new subtitles, converted audio) that the TV cancels,
+  rejects or never starts leaves the current playback running.
+- While the control channel reconnects the controls stay live; the latest
+  play/pause/seek and volume are replayed when the session returns. Recovery
+  now allows six attempts (about 30 s) for Wi-Fi power-save gaps.
+- Stop, failures and service shutdown send STOP and close the receiver app
+  from a background thread. The previous main-thread STOP was rejected by
+  Android and never reached the TV.
+- Errors are shown once; reopening the controller no longer replays an old
+  error dialog.
+
 ## Performance
 
 Readable MediaStore paths bypass the full source-file staging copy. On Android 9
@@ -72,6 +105,14 @@ Android's AAC encoder in batches. The encoder uses AAC-LC at 192 kbps and 48 kHz
 The PCM file is temporary and the app falls back to the established VLC AAC
 path if there is insufficient space or the Android encoder is unavailable.
 Original video samples, frame timing and full-file seeking are preserved.
+
+The local HTTP server reads request headers through a buffer (previously one
+system call per byte), enables TCP_NODELAY with a 1 MiB send buffer, sends
+content-URI movies with zero-copy `transferTo` like regular files, and allows
+16 concurrent range requests so quick seeks are not rejected. 5.1/7.1 audio is
+downmixed with bulk fixed-point math (10 s of 5.1 in tens of milliseconds on a
+desktop JVM). Controller updates only touch views whose content changed, and
+progress notifications are limited to about one per second.
 
 The app caches the most recent eligible completed conversion, up to 8 GiB, and
 reuses it when the source file is unchanged. The prepared file moves into the

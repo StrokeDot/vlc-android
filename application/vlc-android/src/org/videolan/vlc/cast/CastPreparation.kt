@@ -296,6 +296,8 @@ internal object CastPreparation {
             var encoderDone = false
             var pendingIndex = -1
             var pcm: ByteBuffer? = null
+            var downmixIn = ShortArray(0)
+            var downmixOut = ShortArray(0)
             var pcmTime = 0L
             var pcmFrames = 0L
             var pendingEos = false
@@ -395,20 +397,16 @@ internal object CastPreparation {
                             bytes.put(source)
                             source.limit(limit)
                         } else {
-                            for (frame in 0 until frames) {
-                                var left = 0.0; var right = 0.0
-                                for (channel in 0 until channels) {
-                                    val value = source.short.toInt()
-                                    when (channel) {
-                                        0 -> left += value; 1 -> right += value
-                                        2 -> { left += value * 0.707; right += value * 0.707 }
-                                        4 -> left += value * 0.707; 5 -> right += value * 0.707
-                                        6 -> left += value * 0.5; 7 -> right += value * 0.5
-                                    }
-                                }
-                                bytes.putShort((left / 2.5).toInt().coerceIn(-32768, 32767).toShort())
-                                bytes.putShort((right / 2.5).toInt().coerceIn(-32768, 32767).toShort())
-                            }
+                            // Bulk copy + fixed-point math. The previous per-sample ByteBuffer.getShort and
+                            // double arithmetic ran billions of times for a feature-length 5.1 track.
+                            val samples = frames * channels
+                            val mixIn = if (downmixIn.size >= samples) downmixIn else ShortArray(samples).also { downmixIn = it }
+                            val mixOut = if (downmixOut.size >= frames * 2) downmixOut else ShortArray(frames * 2).also { downmixOut = it }
+                            source.asShortBuffer().get(mixIn, 0, samples)
+                            source.position(source.position() + samples * 2)
+                            CastDownmix.toStereo(mixIn, mixOut, frames, channels)
+                            bytes.asShortBuffer().put(mixOut, 0, frames * 2)
+                            bytes.position(bytes.position() + frames * 4)
                         }
                         enc.queueInputBuffer(index, 0, bytes.position(), pcmTime + pcmFrames * 1000000L / sampleRate, 0)
                         pcmFrames += frames

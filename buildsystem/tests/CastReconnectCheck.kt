@@ -139,7 +139,7 @@ fun main(args: Array<String>) {
             })
         try {
             client.start()
-            check(finished.await(24, TimeUnit.SECONDS)) { "$scenario did not finish" }
+            check(finished.await(50, TimeUnit.SECONDS)) { "$scenario did not finish" }
             receiver.join(9500)
             failure.get()?.let { throw it }
             check(!receiver.isAlive) { "$scenario receiver did not finish" }
@@ -150,7 +150,7 @@ fun main(args: Array<String>) {
                 "playing", "paused" -> 2
                 else -> 1
             })
-            if (scenario == "unavailable") check(recoveries.get() == 3)
+            if (scenario == "unavailable") check(recoveries.get() == 6)
             println("Recovery passed: $scenario")
         } finally {
             client.close()
