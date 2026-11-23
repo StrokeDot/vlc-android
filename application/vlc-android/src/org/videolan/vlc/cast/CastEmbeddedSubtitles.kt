@@ -14,10 +14,18 @@ import java.util.Locale
  * Image-based subtitle tracks are not supported by Chromecast text tracks.
  */
 internal object CastEmbeddedSubtitles {
-    data class Track(val index: Int, val language: String, val format: String) {
-        val label: String get() = language.ifBlank { "Unknown language" } + " — " + format
+    data class Track(val index: Int, val language: String, val format: String, val name: String = "", val forced: Boolean = false) {
+        val label: String get() = buildString {
+            append(language.ifBlank { "Unknown language" }).append(" — ").append(format)
+            if (name.isNotBlank()) append(" — ").append(name)
+            if (forced) append(" (forced)")
+        }
     }
     private data class Cue(val start: Long, val end: Long?, val text: String)
+    // Re-selecting a track (or reconnecting) must not rescan a multi-gigabyte movie.
+    private val cache = object : LinkedHashMap<String, String>(4, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?) = size > 3
+    }
     private val supported = setOf(
         "application/x-subrip", "text/x-subrip", "text/srt",
         "text/x-ssa", "text/x-ass", "application/x-ass",
@@ -25,7 +33,6 @@ internal object CastEmbeddedSubtitles {
     )
     private val timing = Regex("""(?m)^\s*(\d{1,3}:\d{2}:\d{2}[,.]\d{3})\s*-->\s*(\d{1,3}:\d{2}:\d{2}[,.]\d{3}).*$""")
     private val numbered = Regex("""(?m)^\s*\d+\s*$""")
-    private val assMarkup = Regex("""\{[^}]*\}""")
 
     private fun extractor(context: Context, movie: Uri): MediaExtractor = MediaExtractor().also {
         try { it.setDataSource(context, movie, null) }
@@ -46,7 +53,7 @@ internal object CastEmbeddedSubtitles {
         // often omits MKV text tracks entirely.
         val matroska = runCatching { CastMatroskaText.tracks(context, movie) }.getOrNull()
         if (!matroska.isNullOrEmpty()) {
-            return matroska.map { Track(-it.number, it.language, it.format) }
+            return matroska.map { Track(-it.number, it.language, it.format, it.name, it.forced) }
         }
         val demux = extractor(context, movie)
         return try {
@@ -61,6 +68,13 @@ internal object CastEmbeddedSubtitles {
 
     /** Full WebVTT document, ready for the existing local Cast HTTP server. */
     fun extract(context: Context, movie: Uri, track: Int): String {
+        val key = "$movie#$track#" + runCatching { CastMovieLocation.localFile(context, movie)?.path?.let { java.io.File(it) }
+            ?.let { "${it.length()}:${it.lastModified()}" } }.getOrNull()
+        synchronized(cache) { cache[key] }?.let { return it }
+        return extractUncached(context, movie, track).also { synchronized(cache) { cache[key] = it } }
+    }
+
+    private fun extractUncached(context: Context, movie: Uri, track: Int): String {
         if (track < 0) return CastMatroskaText.extract(context, movie, -track)
         val demux = extractor(context, movie)
         try {
@@ -97,7 +111,7 @@ internal object CastEmbeddedSubtitles {
                 if (!demux.advance()) break
             }
             require(cues.isNotEmpty()) { "No readable text captions were found in this track" }
-            return render(cues)
+            return CastCueText.render(cues.map { CastCueText.Cue(it.start, it.end, it.text) })
         } finally { demux.release() }
     }
 
@@ -119,20 +133,9 @@ internal object CastEmbeddedSubtitles {
         return String(bytes, offset, count, charset).trimStart('\uFEFF')
     }
 
-    private fun clean(sample: String, type: String): String {
-        var text = sample.replace("\r\n", "\n").replace('\r', '\n').trim()
-        if (type in setOf("text/x-ssa", "text/x-ass", "application/x-ass")) {
-            text = text.removePrefix("Dialogue:").trim()
-            // Matroska ASS event fields end with the original subtitle text.
-            val fields = text.split(',', limit = 9)
-            if (fields.size == 9) text = fields[8]
-            text = text.replace(assMarkup, "").replace("\\N", "\n").replace("\\n", "\n").replace("\\h", " ")
-        } else {
-            text = text.replace(timing, "").replace(numbered, "")
-                .removePrefix("WEBVTT").trim()
-        }
-        return text.trim()
-    }
+    private fun clean(sample: String, type: String): String =
+        if (type in setOf("text/x-ssa", "text/x-ass", "application/x-ass")) CastCueText.fromAss(sample, matroska = false)
+        else CastCueText.fromSrt(sample.replace(timing, "").replace(numbered, "").trim().removePrefix("WEBVTT"))
 
     private fun millis(stamp: String): Long? {
         val parts = stamp.replace(',', '.').split(':', '.')
@@ -140,22 +143,5 @@ internal object CastEmbeddedSubtitles {
         return try {
             (parts[0].toLong() * 3600 + parts[1].toLong() * 60 + parts[2].toLong()) * 1000 + parts[3].toLong()
         } catch (_: NumberFormatException) { null }
-    }
-    private fun timestamp(ms: Long) = String.format(Locale.ROOT, "%02d:%02d:%02d.%03d",
-        ms / 3_600_000, (ms / 60_000) % 60, (ms / 1000) % 60, ms % 1000)
-
-    private fun render(cues: List<Cue>): String {
-        val ordered = cues.sortedBy { it.start }
-        return buildString {
-            append("WEBVTT\n\n")
-            for (i in ordered.indices) {
-                val cue = ordered[i]
-                val next = ordered.getOrNull(i + 1)?.start
-                val end = cue.end?.takeIf { it > cue.start }
-                    ?: minOf(cue.start + 5000, next?.takeIf { it > cue.start } ?: Long.MAX_VALUE)
-                append(timestamp(cue.start)).append(" --> ").append(timestamp(maxOf(end, cue.start + 1)))
-                    .append('\n').append(cue.text).append("\n\n")
-            }
-        }
     }
 }

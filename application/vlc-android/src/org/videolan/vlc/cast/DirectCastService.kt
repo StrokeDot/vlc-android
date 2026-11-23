@@ -60,6 +60,9 @@ class DirectCastService : Service() {
     private var mediaMime = ""
     private var title = ""
     private var device = ""
+    /** Active streaming conversion (HLS from the original file), if any. */
+    @Volatile private var hls: CastHlsSession? = null
+    @Volatile private var hlsFallbackStarted = false
     private var notifiedText: String? = null
     private var notifiedAt = 0L
     @Volatile private var convertedUrlAwaitingPlayback: String? = null
@@ -121,8 +124,15 @@ class DirectCastService : Service() {
                         ctx.ensureActive()
                         val folder = File(cacheDir, "direct-cast-${UUID.randomUUID()}").apply { check(mkdirs()) { "Temporary storage is unavailable" } }
                         directory = folder
-                        val original = if (!convert) CastInput.open(this@DirectCastService, Uri.parse(uri)) else null
-                        val prepared = if (convert) CastPreparedCache.prepare(this@DirectCastService, Uri.parse(uri), folder,
+                        hlsFallbackStarted = false
+                        // Convert-before-casting first tries streaming conversion: copied video segments
+                        // made on demand, so the TV starts in seconds. Full conversion is the fallback.
+                        val streaming = if (convert) {
+                            update { current.copy(message = "Preparing TV-compatible stream…") }
+                            CastHlsSession.open(this@DirectCastService, Uri.parse(uri), File(folder, "hls").apply { mkdirs() })
+                        } else null
+                        val original = if (!convert || streaming != null) CastInput.open(this@DirectCastService, Uri.parse(uri)) else null
+                        val prepared = if (convert && streaming == null) CastPreparedCache.prepare(this@DirectCastService, Uri.parse(uri), folder,
                             { ctx.ensureActive() }, { message -> update { if (current.active) current.copy(message = message) else current } }) else null
                         ctx.ensureActive()
                         val address = InetAddress.getByName(host)
@@ -135,6 +145,7 @@ class DirectCastService : Service() {
                         val source = original?.source ?: CastFileServer.FileSource(requireNotNull(prepared).file)
                         val mime = original?.mime ?: requireNotNull(prepared).mime
                         val http = CastFileServer(local, source, mime)
+                        val streamUrl = streaming?.let { http.setRouter(it) }
                         val captions = subtitleText?.let { http.setSubtitles(it) }
                         val client = CastConnection(address, port,
                             ready = { loadCurrent() },
@@ -148,12 +159,15 @@ class DirectCastService : Service() {
                                 // live (commands are queued and replayed) instead of graying the whole screen.
                                 update { if (current.active) current.copy(message = "Reconnecting to $device…", error = null) else current }
                             },
-                            notice = { message -> update { if (current.active) current.copy(message = message) else current } })
+                            notice = { message -> update { if (current.active) current.copy(message = message) else current } },
+                            mediaError = { url -> streamingFailed(url) })
                         synchronized(resources) {
-                            if (destroyed || !ctx.isActive) { http.close(); client.close(); return@launch }
+                            if (destroyed || !ctx.isActive) { http.close(); client.close(); streaming?.close(); return@launch }
                             server = http; connection = client
                             preparedOutput = prepared
-                            mediaUrl = http.mediaUrl(); mediaMime = mime; subtitleUrl = captions
+                            hls = streaming
+                            mediaUrl = streamUrl ?: http.mediaUrl(); mediaMime = if (streamUrl != null) CastHlsSession.MIME else mime
+                            subtitleUrl = captions
                             update { current.copy(preparing = false, message = "Connecting to $device…", subtitle = captions != null) }
                             client.start()
                         }
@@ -214,15 +228,27 @@ class DirectCastService : Service() {
         }
     }
 
-    private fun prepareAudioWhileCasting() {
-        if (!current.connected || current.preparing || conversionJob?.isActive == true) return
-        update { current.copy(preparing = true, message = "Converting audio for TV…", error = null) }
+    /** The receiver rejected the streaming version: switch to full conversion instead of ending the cast. */
+    private fun streamingFailed(url: String): Boolean {
+        if (!url.contains("/hls/") || hls == null || hlsFallbackStarted || !current.active) return false
+        hlsFallbackStarted = true
+        Log.w("VLCPlus/CastPerf", "phase=hls-rejected-by-receiver fallback=full-conversion")
+        synchronized(resources) { server?.setRouter(null); hls?.close(); hls = null }
+        update { current.copy(preparing = false, message = "This TV needs the full conversion. Preparing it…") }
+        prepareAudioWhileCasting(forceFull = true)
+        return true
+    }
+
+    private fun prepareAudioWhileCasting(forceFull: Boolean = false) {
+        if ((!current.connected && !forceFull) || current.preparing || conversionJob?.isActive == true) return
+        update { current.copy(preparing = true, message = if (forceFull) "Converting audio for TV…" else "Preparing TV-compatible stream…", error = null) }
         conversionJob = scope.launch {
             val ctx = currentCoroutineContext()
             var candidate: CastFileServer? = null
             var attempt: File? = null
             var retained = false
             val preparationStartMs = SystemClock.elapsedRealtime()
+            if (!forceFull && hls == null && !hlsFallbackStarted && startStreaming(ctx, preparationStartMs)) return@launch
             try {
                 Log.i("VLCPlus/CastPerf", "phase=live-conversion-start receiverConnected=${current.connected} playback=${current.playing}")
                 val root = requireNotNull(directory)
@@ -255,6 +281,26 @@ class DirectCastService : Service() {
                 update { current.copy(preparing = false, message = message, error = message, errorId = nextError()) }
             } finally { candidate?.close(); if (!retained) attempt?.deleteRecursively() }
         }
+    }
+
+    /** Live Convert: switch the receiver to the streaming version at the current position. */
+    private fun startStreaming(ctx: kotlin.coroutines.CoroutineContext, startedMs: Long): Boolean {
+        val root = directory ?: return false
+        val session = CastHlsSession.open(this, Uri.parse(current.mediaUri), File(root, "hls-${UUID.randomUUID()}").apply { mkdirs() }) ?: return false
+        synchronized(resources) {
+            val http = server
+            if (destroyed || !ctx.isActive || !current.active || http == null) { session.close(); return true }
+            hls?.close(); hls = session
+            mediaUrl = http.setRouter(session); mediaMime = CastHlsSession.MIME
+            val now = SystemClock.elapsedRealtime()
+            convertedUrlAwaitingPlayback = mediaUrl
+            conversionHandoffAtMs = now
+            Log.i("VLCPlus/CastPerf", "phase=hls-handoff elapsedMs=${now - startedMs} audio=${session.audioMode}")
+            update { current.copy(preparing = false, message = "Switching to TV-compatible stream…",
+                position = current.position + if (current.playing) now - current.positionUpdatedAt else 0, positionUpdatedAt = now) }
+            loadCurrent()
+        }
+        return true
     }
 
     private fun receiveStatus(data: JSONObject) {
@@ -394,6 +440,7 @@ class DirectCastService : Service() {
             // the main thread, where the previous direct STOP was rejected by Android and never sent.
             stopReceiver(connection, close = true)
             server?.close()
+            hls?.close(); hls = null
             CastPreparedCache.remember(preparedOutput)
             preparedOutput = null
             retiredServers.forEach { (http, folder) -> http.close(); folder?.deleteRecursively() }; retiredServers.clear()
