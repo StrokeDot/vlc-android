@@ -29,7 +29,12 @@ internal class CastConnection(
     private val styleFailed: (String) -> Unit = {},
     private val reconnecting: (Int, IOException) -> Unit = { _, _ -> },
     /** Non-fatal: the receiver rejected one command but playback continues. */
-    private val notice: (String) -> Unit = {}
+    private val notice: (String) -> Unit = {},
+    /**
+     * The receiver could not play [url] (rejected, failed or errored). Return true when the caller
+     * will load something else (e.g. full conversion after a streaming attempt) so the session stays up.
+     */
+    private val mediaError: (url: String) -> Boolean = { false }
 ) : Closeable {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val request = AtomicInteger()
@@ -111,14 +116,16 @@ internal class CastConnection(
                         delay(5000)
                         val waiting = pendingLoad
                         if (waiting != null && System.nanoTime() - waiting.started > 30_000_000_000L) {
-                            if (mediaSession == null) {
+                            pendingLoad = null
+                            if (mediaError(waiting.url)) { /* caller loads an alternative */ }
+                            else if (mediaSession == null) {
                                 failed("The receiver did not start this video. Tap Convert or use VLC casting.")
                                 close()
                                 return@launch
+                            } else {
+                                // A replacement LOAD (subtitles/converted audio) stalled; the original keeps playing.
+                                notice("The TV did not switch versions in time. The previous one keeps playing.")
                             }
-                            // A replacement LOAD (subtitles/converted audio) stalled; the original keeps playing.
-                            pendingLoad = null
-                            notice("The TV did not switch versions in time. The previous one keeps playing.")
                         }
                         send("receiver-0", HEARTBEAT, JSONObject().put("type", "PING"))
                         if (!recovering) transport?.let { send(it, MEDIA, JSONObject().put("type", "GET_STATUS")) }
@@ -169,7 +176,11 @@ internal class CastConnection(
                                     if (nextLoad != null) nextLoad() else replay?.invoke()
                                     volume?.let { setVolume(it) }
                                 }
-                                CastSessionPolicy.ERROR -> throw IllegalStateException("The receiver cannot play this file. Tap Convert to prepare compatible audio, or use VLC casting.")
+                                CastSessionPolicy.ERROR -> {
+                                    val failedUrl = waiting?.url ?: media?.optJSONObject("media")?.optString("contentId")?.takeIf { it.isNotEmpty() } ?: activeMediaUrl ?: ""
+                                    pendingLoad = null
+                                    if (!mediaError(failedUrl)) throw IllegalStateException("The receiver cannot play this file. Tap Convert to prepare compatible audio, or use VLC casting.")
+                                }
                                 CastSessionPolicy.END -> {
                                     status(media ?: JSONObject().put("playerState", "IDLE").put("idleReason", "CANCELLED"))
                                     close()
@@ -182,8 +193,11 @@ internal class CastConnection(
                                 synchronized(writeLock) { styleRequests.remove(id) } -> styleFailed("The TV could not apply this subtitle style.")
                                 // Only a rejected first LOAD ends the session. A rejected play/pause/seek (common
                                 // while buffering) used to kill the controller while the TV kept playing.
-                                pendingLoad?.requestId == id && mediaSession == null ->
-                                    throw IllegalStateException("The receiver could not play this file. Tap Convert to prepare compatible audio, or use VLC casting.")
+                                pendingLoad?.requestId == id && mediaSession == null -> {
+                                    val url = pendingLoad?.url ?: ""
+                                    pendingLoad = null
+                                    if (!mediaError(url)) throw IllegalStateException("The receiver could not play this file. Tap Convert to prepare compatible audio, or use VLC casting.")
+                                }
                                 else -> { notice("The TV ignored that command. Try again."); requestStatus() }
                             }
                         }
@@ -192,10 +206,13 @@ internal class CastConnection(
                             val waiting = pendingLoad
                             val id = data.optInt("requestId", -1)
                             if (waiting != null && (id == waiting.requestId || id < 0)) {
-                                if (mediaSession == null) throw IllegalStateException("The receiver could not play this file. Tap Convert to prepare compatible audio, or use VLC casting.")
                                 pendingLoad = null
-                                notice("The TV could not switch to the new version. The previous one keeps playing.")
-                                requestStatus()
+                                if (mediaError(waiting.url)) Unit
+                                else if (mediaSession == null) throw IllegalStateException("The receiver could not play this file. Tap Convert to prepare compatible audio, or use VLC casting.")
+                                else {
+                                    notice("The TV could not switch to the new version. The previous one keeps playing.")
+                                    requestStatus()
+                                }
                             }
                         }
                     }
@@ -276,6 +293,8 @@ internal class CastConnection(
             return
         }
         val media = JSONObject().put("contentId", url).put("contentType", mime).put("streamType", "BUFFERED")
+        // Streaming conversion: HLS with CMAF (fMP4) audio and video segments.
+        if (mime == HLS_MIME) media.put("hlsSegmentFormat", "fmp4").put("hlsVideoSegmentFormat", "fmp4")
             .put("metadata", JSONObject().put("metadataType", 0).put("title", title))
         if (durationMs > 0) media.put("duration", durationMs / 1000.0)
         val command = JSONObject().put("type", "LOAD").put("media", media)
@@ -343,6 +362,7 @@ internal class CastConnection(
     companion object {
         /** ~1+2+4+8+8+8 s of back-off: survives Wi-Fi power-save gaps with the phone screen off. */
         private const val MAX_RECOVERY = 6
+        const val HLS_MIME = "application/x-mpegURL"
         const val DEFAULT_APP = "CC1AD845"
         const val RECEIVER = "urn:x-cast:com.google.cast.receiver"
         const val MEDIA = "urn:x-cast:com.google.cast.media"

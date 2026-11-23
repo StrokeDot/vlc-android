@@ -130,6 +130,29 @@ public final class CastCoreTest {
             check(server.mediaGetCount()==1 && server.mediaBytesServed()==3);
         }
 
+        // HLS routes: playlists from memory, segments from files, unknown names 404, router errors 503.
+        File segment=File.createTempFile("cast-hls",".m4s");Files.write(segment.toPath(),new byte[]{1,2,3,4,5});
+        try(CastFileServer server=new CastFileServer(InetAddress.getLoopbackAddress(),large,"video/x-matroska")) {
+            String master=server.setRouter(name->{
+                if(name.equals("master.m3u8"))return CastFileServer.bytes("#EXTM3U\n".getBytes(StandardCharsets.UTF_8),"application/vnd.apple.mpegurl");
+                if(name.equals("v0.m4s"))return CastFileServer.file(segment,"video/mp4");
+                if(name.equals("v9.m4s"))throw new IOException("not ready");
+                return null;
+            });
+            check(master.endsWith("/hls/master.m3u8"));
+            HttpURLConnection c=request(master,"GET",null);
+            check(c.getResponseCode()==200&&"application/vnd.apple.mpegurl".equals(c.getContentType()));
+            check(new String(c.getInputStream().readAllBytes(),StandardCharsets.UTF_8).equals("#EXTM3U\n"));c.disconnect();
+            String base=master.substring(0,master.length()-"master.m3u8".length());
+            c=request(base+"v0.m4s","GET","bytes=1-2");
+            check(c.getResponseCode()==206&&Arrays.equals(c.getInputStream().readAllBytes(),new byte[]{2,3}));c.disconnect();
+            c=request(base+"v1.m4s","GET",null);check(c.getResponseCode()==404);c.disconnect();
+            c=request(base+"v9.m4s","GET",null);check(c.getResponseCode()==503);c.disconnect();
+            c=request(base+"../media","GET",null);check(c.getResponseCode()==404);c.disconnect();
+            server.setRouter(null);
+            c=request(master,"GET",null);check(c.getResponseCode()==404);c.disconnect();
+        }finally{segment.delete();}
+
         File media = File.createTempFile("cast-core", ".mp4");
         byte[] data = new byte[1024];
         for (int i=0;i<data.length;i++) data[i]=(byte)i;

@@ -24,6 +24,31 @@ public final class CastFileServer implements Closeable {
         long position();
     }
     public abstract static class ChannelledStream extends InputStream implements Channelled {}
+    /** A named resource served under /<token>/hls/ (playlists and on-demand segments). */
+    public interface Resource {
+        long length();
+        String type();
+        InputStream open(long offset) throws IOException;
+    }
+    public interface Router { Resource resolve(String name) throws IOException; }
+    public static Resource bytes(final byte[] data,final String type){
+        return new Resource(){
+            public long length(){return data.length;}
+            public String type(){return type;}
+            public InputStream open(long offset){return new ByteArrayInputStream(data,(int)offset,data.length-(int)offset);}
+        };
+    }
+    public static Resource file(final File file,final String type) throws IOException {
+        final FileSource source=new FileSource(file);
+        return new Resource(){
+            public long length(){return source.length();}
+            public String type(){return type;}
+            public InputStream open(long offset)throws IOException{return source.open(offset);}
+        };
+    }
+    private volatile Router router;
+    /** Installs (or removes) HLS routes; returns the master playlist URL. */
+    public String setRouter(Router value){router=value;return base()+"/hls/master.m3u8";}
     public static final class FileSource implements Source {
         private final File file;
         public FileSource(File file) throws IOException {
@@ -92,13 +117,18 @@ public final class CastFileServer implements Closeable {
             Map<String,String> headers=new HashMap<>();int size=first.length();
             for(String s;(s=line(in)).length()>0;){size+=s.length();if(size>16384)return;int colon=s.indexOf(':');if(colon>0)headers.put(s.substring(0,colon).toLowerCase(Locale.ROOT),s.substring(colon+1).trim());}
             boolean media=request[1].equals("/"+secret+"/media"),sub=request[1].equals("/"+secret+"/subtitles.vtt");
+            String hlsPrefix="/"+secret+"/hls/";Router routes=router;Resource routed=null;
+            if(!media&&!sub&&routes!=null&&request[1].startsWith(hlsPrefix)&&!request[1].contains("..")){
+                try{routed=routes.resolve(request[1].substring(hlsPrefix.length()));}
+                catch(IOException e){OutputStream o=socket.getOutputStream();head(o,503,"Service Unavailable",0,null,null,headers.get("origin"));return;}
+            }
             OutputStream out=socket.getOutputStream();
             String origin=headers.get("origin");
-            if(!media&&!sub){head(out,404,"Not Found",0,null,null,origin);return;}
+            if(!media&&!sub&&routed==null){head(out,404,"Not Found",0,null,null,origin);return;}
             if(request[0].equals("OPTIONS")){head(out,204,"No Content",0,null,null,origin);return;}
             if(!request[0].equals("GET")&&!request[0].equals("HEAD")){head(out,405,"Method Not Allowed",0,null,null,origin);return;}
-            if(media){if(request[0].equals("GET"))mediaGets.incrementAndGet();else mediaHeads.incrementAndGet();}
-            byte[] text=subtitles;long length=media?source.length():text.length,start=0,end=length-1;boolean partial=false;
+            if(media||routed!=null){if(request[0].equals("GET"))mediaGets.incrementAndGet();else mediaHeads.incrementAndGet();}
+            byte[] text=subtitles;long length=routed!=null?routed.length():media?source.length():text.length,start=0,end=length-1;boolean partial=false;
             String range=headers.get("range");
             if(range!=null){
                 try{
@@ -110,11 +140,11 @@ public final class CastFileServer implements Closeable {
                 }catch(IllegalArgumentException e){head(out,416,"Range Not Satisfiable",0,null,"bytes */"+length,origin);return;}
             }
             long count=Math.max(0,end-start+1);
-            head(out,partial?206:200,partial?"Partial Content":"OK",count,media?mime:"text/vtt; charset=utf-8",partial?"bytes "+start+"-"+end+"/"+length:null,origin);
+            head(out,partial?206:200,partial?"Partial Content":"OK",count,routed!=null?routed.type():media?mime:"text/vtt; charset=utf-8",partial?"bytes "+start+"-"+end+"/"+length:null,origin);
             if(request[0].equals("HEAD"))return;
-            if(media){
+            if(media||routed!=null){
                 long sent=0;
-                try(InputStream input=source.open(start)){
+                try(InputStream input=routed!=null?routed.open(start):source.open(start)){
                     // Let the kernel deliver file pages directly (files and content-URI descriptors alike);
                     // avoid a Java read/copy per chunk.
                     if(input instanceof Channelled && socket.getChannel()!=null){

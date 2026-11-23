@@ -43,6 +43,10 @@ claiming that it matches XPlayer or fixes the original VLC slowdown.
 `bash buildsystem/test-direct-cast.sh` exercises protocol framing, receiver
 termination policy, actual HTTP range/HEAD/CORS/authorization behavior,
 subtitle conversion and the surround downmix without Android.
+`bash buildsystem/test-cast-jvm.sh` (needs kotlinc, ffmpeg, ffprobe, mkvmerge)
+builds ffmpeg and mkvmerge test movies and checks subtitle extraction plus a
+full streaming session over HTTP decoded by ffmpeg. `CastHlsDeviceTest` repeats
+the streaming checks with Android's extractors, codecs and libVLC.
 `buildsystem/tests/CastReconnectCheck.kt` and `CastCommandCheck.kt` drive
 `CastConnection` against a local TLS fake receiver (reconnection, rejected
 commands, cancelled replacement loads and Stop delivery).
@@ -57,6 +61,48 @@ Fixtures are synthetic two-second test patterns and sine-wave clips.
 Device acceptance remains: discover both receivers; show captions on the TV;
 play smoothly; seek ±15 seconds; repeat after audio preparation; continue with
 the phone screen off; stop from phone or receiver and verify disconnection.
+
+## Streaming conversion (Convert in seconds)
+
+**Convert** first tries a streaming conversion for Matroska (MKV/WebM) movies with
+H.264 or HEVC video, the usual "no sound / won't play" case:
+
+- The receiver gets an HLS stream (CMAF/fMP4 audio and video renditions) from
+  the phone's local server instead of a finished MP4.
+- Video segments (~6 s, cut at keyframes from the Matroska Cues index) are
+  written **on request** from the original file. Samples are copied
+  byte-for-byte, so no picture quality is lost and nothing is re-encoded.
+- Audio that is already AAC-LC mono/stereo is copied too. Otherwise it is
+  converted to stereo AAC ahead of the playhead: by Android's decoder when the
+  phone has one (AC-3/E-AC-3 on most Dolby-licensed phones, DTS where present,
+  MP3, FLAC, multichannel AAC), and a seek restarts it at the new position. For
+  formats the phone cannot decode (e.g. TrueHD), VLC converts the audio, which
+  only runs forward: seeking far ahead waits until VLC reaches that point.
+- Playback starts once the first segments exist: under a second on a 1.3 GB,
+  10-minute 1080p E-AC-3 test file (JVM measurement; phones are slower, and the
+  VLC path adds its own start-up). It no longer depends on the movie's length.
+- If the TV rejects or fails to play the stream, VLC Plus switches to the full
+  conversion automatically. Tap **Convert** again while streaming to ask for
+  the full conversion directly. Other containers (MP4, AVI, TS…) still use the
+  full conversion.
+
+## Embedded subtitles
+
+Matroska text subtitles are read by a shared reader (`CastMkvReader`) that also
+powers streaming conversion:
+
+- zlib and header-stripping track compression (mkvmerge's defaults for many
+  files; previously shown on the TV as binary garbage) and Xiph/EBML/fixed lacing;
+- the Cues index when it lists the subtitle track (mkvmerge does), so only the
+  subtitle blocks are read instead of walking the whole movie;
+- unknown-size clusters, and track names and forced flags in the track list.
+
+Cue text is made WebVTT-safe for embedded tracks and external SRT files alike:
+`&`, `<` and `>` are escaped (`I <3 you` used to vanish), `-->` inside text can
+no longer start a timing line, blank lines no longer cut a cue short, ASS
+drawing commands and override tags (`{\p1}m 0 0 l…`, `{\an8}`) are removed,
+and `<font>` tags keep their text. `<i>`, `<b>` and `<u>` are kept. Extracted
+tracks are cached for the session.
 
 ## Subtitle appearance
 

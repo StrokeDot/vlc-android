@@ -237,8 +237,8 @@ class DirectCastActivity : AppCompatActivity(), CastControlsView.Actions {
     override fun convert() {
         if (current.preparing) return
         AlertDialog.Builder(this).setTitle("Convert audio for TV")
-            .setMessage(if (current.connected) "Prepare compatible stereo audio while the current picture keeps playing. When ready, playback switches at your current position. This needs time and temporary storage."
-                else "Prepare compatible audio and a seekable video file before playback. Use this if the receiver cannot play the original or has no sound. This can take several minutes.")
+            .setMessage(if (current.connected) "Streams a TV-compatible version within seconds: the picture is copied and only the audio is converted, continuing at your current position. MKV movies stream right away; other files, or a TV that rejects the stream, use the full conversion, which takes longer."
+                else "Starts with a TV-compatible stream within seconds (picture copied, audio converted). Use this if the receiver cannot play the original or has no sound. Files that cannot be streamed use the full conversion, which can take several minutes.")
             .setPositiveButton("Convert") { _, _ ->
                 if (current.connected) command(DirectCastService.CONVERT)
                 else { convertBeforeConnect = true; devices() }
@@ -247,7 +247,7 @@ class DirectCastActivity : AppCompatActivity(), CastControlsView.Actions {
 
     override fun help() {
         AlertDialog.Builder(this).setTitle("Casting help")
-            .setMessage("Fast cast sends the original file first.\n\nNo sound? Tap Convert to prepare stereo audio.\n\nSubtitles: Extract from movie reads compatible embedded text tracks. External SRT/WebVTT files can still be chosen from the movie folder. Bitmap subtitle formats are not yet supported.\n\nStop cancels casting and preparation. Use VLC casting is the original fallback.")
+            .setMessage("Fast cast sends the original file first.\n\nNo sound? Tap Convert: MKV movies switch to a TV-compatible stream in seconds. Tap Convert again for the full conversion.\n\nSubtitles: Extract from movie reads compatible embedded text tracks. External SRT/WebVTT files can still be chosen from the movie folder. Bitmap subtitle formats are not yet supported.\n\nStop cancels casting and preparation. Use VLC casting is the original fallback.")
             .setPositiveButton("OK", null).show()
     }
 
