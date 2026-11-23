@@ -209,6 +209,30 @@ public final class CastCoreTest {
                 System.out.println("Concurrent delivery: 72 MiB plus captions in "+((System.nanoTime()-started)/1000000)+" ms (loopback only)");
             } finally {clients.shutdownNow();}
         } finally {sustained.delete();}
+        // Fixed-point downmix must match the original floating-point weights.
+        java.util.Random random = new java.util.Random(7);
+        for (int channels : new int[]{6, 8}) {
+            int frames = 4096; short[] mixIn = new short[frames * channels]; short[] mixOut = new short[frames * 2];
+            for (int i = 0; i < mixIn.length; i++) mixIn[i] = (short) (random.nextInt(65536) - 32768);
+            mixIn[0] = mixIn[1] = mixIn[2] = mixIn[4] = mixIn[5] = 32767; if (channels == 8) mixIn[6] = mixIn[7] = 32767;
+            CastDownmix.toStereo(mixIn, mixOut, frames, channels);
+            int worst = 0;
+            for (int f = 0; f < frames; f++) {
+                double left = 0, right = 0;
+                for (int c = 0; c < channels; c++) {
+                    int v = mixIn[f * channels + c];
+                    switch (c) { case 0: left += v; break; case 1: right += v; break; case 2: left += v * 0.707; right += v * 0.707; break;
+                        case 4: left += v * 0.707; break; case 5: right += v * 0.707; break; case 6: left += v * 0.5; break; case 7: right += v * 0.5; break; }
+                }
+                int l = Math.max(-32768, Math.min(32767, (int) (left / 2.5))), r = Math.max(-32768, Math.min(32767, (int) (right / 2.5)));
+                worst = Math.max(worst, Math.max(Math.abs(l - mixOut[f * 2]), Math.abs(r - mixOut[f * 2 + 1])));
+            }
+            check(worst <= 2);
+        }
+        rejects(() -> CastDownmix.toStereo(new short[4], new short[2], 1, 4));
+        long downmixStart = System.nanoTime(); short[] big = new short[48000 * 6 * 10]; short[] bigOut = new short[48000 * 2 * 10];
+        CastDownmix.toStereo(big, bigOut, 48000 * 10, 6);
+        System.out.println("Downmix: 10 s of 5.1 in " + (System.nanoTime() - downmixStart) / 1_000_000 + " ms");
         System.out.println("Direct Cast core: " + checks + " checks passed");
     }
     private static HttpURLConnection request(String url,String method,String range) throws Exception {
