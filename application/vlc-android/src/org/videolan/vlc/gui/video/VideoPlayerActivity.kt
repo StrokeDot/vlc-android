@@ -1726,7 +1726,17 @@ open class VideoPlayerActivity : AppCompatActivity(), PlaybackService.Callback, 
         return listOf()
     }
 
+    private fun openDirectCast(autoConnect: Boolean = false) {
+        val playback = service ?: return
+        startActivityForResult(DirectCastActivity.intent(this, playback.currentMediaLocation, playback.title,
+            playback.getTime(), playback.length, autoConnect), DirectCastActivity.REQUEST)
+    }
+
     private fun onPlaying() {
+        // A receiver was chosen from the library Cast button: hand this video to it exactly once
+        // (Playing can fire repeatedly, so the target is consumed here rather than in the controller).
+        if (Build.VERSION.SDK_INT >= 21 && DirectCastService.pendingTarget != null && DirectCastService.state.value?.active != true
+            && !PlaybackService.hasRenderer()) openDirectCast(autoConnect = true)
         val mw = service?.currentMediaWrapper ?: return
         isPlaying = true
         overlayDelegate.hasPlaylist = service?.hasPlaylist() == true
@@ -2010,15 +2020,8 @@ open class VideoPlayerActivity : AppCompatActivity(), PlaybackService.Callback, 
             }
             R.id.player_overlay_navmenu -> showNavMenu()
             R.id.player_overlay_length, R.id.player_overlay_time -> toggleTimeDisplay()
-            R.id.video_renderer -> if (Build.VERSION.SDK_INT >= 21) {
-                service?.let { playback ->
-                    startActivityForResult(Intent(this, DirectCastActivity::class.java)
-                        .putExtra("uri", playback.currentMediaLocation)
-                        .putExtra("title", playback.title)
-                        .putExtra("position", playback.getTime())
-                        .putExtra("duration", playback.length), DirectCastActivity.REQUEST)
-                }
-            } else if (supportFragmentManager.findFragmentByTag("renderers") == null)
+            R.id.video_renderer -> if (Build.VERSION.SDK_INT >= 21) openDirectCast()
+            else if (supportFragmentManager.findFragmentByTag("renderers") == null)
                 RenderersDialog().show(supportFragmentManager, "renderers")
             R.id.video_secondary_display -> {
                 clone = displayManager.isSecondary

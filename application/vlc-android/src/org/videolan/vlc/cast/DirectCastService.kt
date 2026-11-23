@@ -20,6 +20,7 @@ import java.net.DatagramSocket
 import java.net.InetAddress
 import java.nio.charset.Charset
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicInteger
 
 internal data class DirectCastState(
     val active: Boolean = false, val connected: Boolean = false, val preparing: Boolean = false,
@@ -27,8 +28,13 @@ internal data class DirectCastState(
     val position: Long = 0, val duration: Long = 0, val subtitle: Boolean = false,
     val title: String = "", val device: String = "", val mediaUri: String = "",
     val volume: Double = 1.0, val positionUpdatedAt: Long = SystemClock.elapsedRealtime(),
-    val error: String? = null
+    val error: String? = null,
+    /** Increments for every new error so a controller opened later never re-shows an old one. */
+    val errorId: Int = 0
 )
+
+/** A receiver chosen before a video was opened (library Cast button). */
+internal data class CastTarget(val host: String, val port: Int, val name: String)
 
 /** Owns local file serving while the controller is closed or the screen is off. */
 class DirectCastService : Service() {
@@ -54,6 +60,8 @@ class DirectCastService : Service() {
     private var mediaMime = ""
     private var title = ""
     private var device = ""
+    private var notifiedText: String? = null
+    private var notifiedAt = 0L
     @Volatile private var convertedUrlAwaitingPlayback: String? = null
     @Volatile private var conversionHandoffAtMs = 0L
     @Volatile private var playbackRequested = true
@@ -132,13 +140,15 @@ class DirectCastService : Service() {
                             ready = { loadCurrent() },
                             status = { receiveStatus(it) },
                             failed = { failure(it) },
-                            volumeChanged = { update { current.copy(volume = it) } },
-                            styleFailed = { message -> update { current.copy(error = message) } },
+                            volumeChanged = { if (it != current.volume) update { current.copy(volume = it) } },
+                            styleFailed = { message -> update { current.copy(error = message, errorId = nextError()) } },
                             reconnecting = { attempt, error ->
-                                Log.w("VLCPlus/Cast", "Cast control connection lost, reconnecting ($attempt/3)", error)
-                                update { if (current.active) current.copy(connected = false,
-                                    message = "Reconnecting to $device…", error = null) else current }
-                            })
+                                Log.w("VLCPlus/Cast", "Cast control connection lost, reconnecting ($attempt)", error)
+                                // The TV keeps playing while the control channel reconnects. Keep the controls
+                                // live (commands are queued and replayed) instead of graying the whole screen.
+                                update { if (current.active) current.copy(message = "Reconnecting to $device…", error = null) else current }
+                            },
+                            notice = { message -> update { if (current.active) current.copy(message = message) else current } })
                         synchronized(resources) {
                             if (destroyed || !ctx.isActive) { http.close(); client.close(); return@launch }
                             server = http; connection = client
@@ -159,7 +169,7 @@ class DirectCastService : Service() {
                 update { current.copy(active = false, connected = false, preparing = false, message = "Disconnected") }
                 val client = connection
                 scope.launch {
-                    runCatching { client?.command("STOP") }
+                    runCatching { client?.stopPlayback() }
                     update { current.copy(active = false, connected = false, preparing = false, message = "Disconnected") }
                     stopSelf()
                 }
@@ -183,7 +193,7 @@ class DirectCastService : Service() {
                         update { current.copy(subtitle = subtitleUrl != null, error = null) }
                         loadCurrent()
                     }
-                } catch (e: Exception) { val message = e.message ?: "Could not load subtitles"; update { current.copy(message = message, error = message) } }
+                } catch (e: Exception) { val message = e.message ?: "Could not load subtitles"; update { current.copy(message = message, error = message, errorId = nextError()) } }
             }
         }
         return START_NOT_STICKY
@@ -242,7 +252,7 @@ class DirectCastService : Service() {
             catch (e: Exception) {
                 Log.w("VLCPlus/CastPerf", "phase=live-conversion-failed elapsedMs=${SystemClock.elapsedRealtime() - preparationStartMs} reason=${e.javaClass.simpleName}")
                 val message = e.message ?: "Audio conversion failed"
-                update { current.copy(preparing = false, message = message, error = message) }
+                update { current.copy(preparing = false, message = message, error = message, errorId = nextError()) }
             } finally { candidate?.close(); if (!retained) attempt?.deleteRecursively() }
         }
     }
@@ -305,6 +315,7 @@ class DirectCastService : Service() {
             positionUpdatedAt = now,
             duration = if (duration > 0) duration else current.duration,
             error = stalledReason ?: if (playing == "PLAYING") null else current.error,
+            errorId = if (stalledReason != null) nextError() else current.errorId,
             message = if (current.preparing) current.message else when (playing) {
                 "PLAYING" -> "Playing on $device"
                 "PAUSED" -> "Paused on $device"
@@ -342,28 +353,47 @@ class DirectCastService : Service() {
 
     @Synchronized private fun update(start: Boolean = false, transform: () -> DirectCastState) {
         if (destroyed) return
+        val previous = states.value
         val next = states.update(start) { transform() } ?: return
+        if (next == previous) return
         state.postValue(next)
-        if (next.active) (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).notify(NOTIFICATION, notification())
+        // Notification posts are IPC and rate-limited by Android; progress text can change many
+        // times per second, so only post real changes and at most ~once per second for progress.
+        if (next.active && next.message != notifiedText) {
+            val now = SystemClock.elapsedRealtime()
+            val progressOnly = next.message.endsWith("%") && notifiedText?.endsWith("%") == true
+            if (!progressOnly || now - notifiedAt >= 1000) {
+                notifiedText = next.message; notifiedAt = now
+                (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).notify(NOTIFICATION, notification())
+            }
+        }
     }
 
     private fun failure(message: String) {
         convertedUrlAwaitingPlayback = null
         Log.w("VLCPlus/Cast", message)
         // A failed conversion/LOAD must not leave the receiver app attempting to
-        // play an orphaned local HTTP URL after this service shuts down.
-        runCatching { connection?.command("STOP") }
-        update { current.copy(active = false, connected = false, preparing = false, message = message, error = message) }
+        // play an orphaned local HTTP URL after this service shuts down. Android forbids network
+        // writes on the main thread (the old call silently threw there), so hop off it when needed.
+        stopReceiver(connection)
+        update { current.copy(active = false, connected = false, preparing = false, message = message, error = message, errorId = nextError()) }
         stopSelf()
+    }
+
+    private fun stopReceiver(client: CastConnection?, close: Boolean = false) {
+        client ?: return
+        val stop = Runnable { runCatching { client.stopPlayback() }; if (close) client.close() }
+        if (Looper.myLooper() == Looper.getMainLooper()) Thread(stop, "VLCPlus-cast-stop").start() else stop.run()
     }
 
     override fun onDestroy() {
         synchronized(resources) {
             destroyed = true
             convertedUrlAwaitingPlayback = null
-            // End the receiver's media session before its HTTP stream disappears.
-            runCatching { connection?.command("STOP") }
-            connection?.close(); server?.close()
+            // End the receiver's media session before its HTTP stream disappears. onDestroy runs on
+            // the main thread, where the previous direct STOP was rejected by Android and never sent.
+            stopReceiver(connection, close = true)
+            server?.close()
             CastPreparedCache.remember(preparedOutput)
             preparedOutput = null
             retiredServers.forEach { (http, folder) -> http.close(); folder?.deleteRecursively() }; retiredServers.clear()
@@ -379,6 +409,10 @@ class DirectCastService : Service() {
 
     companion object {
         internal val state = MutableLiveData(DirectCastState())
+        /** Receiver picked from the library before any video was opened; consumed by the player. */
+        @Volatile internal var pendingTarget: CastTarget? = null
+        private val errors = AtomicInteger()
+        private fun nextError() = errors.incrementAndGet()
         const val CONNECT = "vlcplus.cast.CONNECT"
         const val STOP = "vlcplus.cast.STOP"
         const val PLAY = "vlcplus.cast.PLAY"
