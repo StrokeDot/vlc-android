@@ -63,6 +63,7 @@ class DirectCastActivity : AppCompatActivity(), CastControlsView.Actions {
         pendingSubtitle = savedInstanceState?.getString("subtitle")
         convertBeforeConnect = savedInstanceState?.getBoolean("convert") ?: false
         nsd = getSystemService(Context.NSD_SERVICE) as NsdManager
+        rememberedReceiver()
         controls = CastControlsView(this, this)
         setContentView(controls)
         controls.requestApplyInsets()
@@ -237,8 +238,8 @@ class DirectCastActivity : AppCompatActivity(), CastControlsView.Actions {
     override fun convert() {
         if (current.preparing) return
         AlertDialog.Builder(this).setTitle("Convert audio for TV")
-            .setMessage(if (current.connected) "Prepare compatible stereo audio while the current picture keeps playing. When ready, playback switches at your current position. This needs time and temporary storage."
-                else "Prepare compatible audio and a seekable video file before playback. Use this if the receiver cannot play the original or has no sound. This can take several minutes.")
+            .setMessage(if (current.connected) "Streams a TV-compatible version within seconds: the picture is copied and only the audio is converted, continuing at your current position. MKV movies stream right away; other files, or a TV that rejects the stream, use the full conversion, which takes longer."
+                else "Starts with a TV-compatible stream within seconds (picture copied, audio converted). Use this if the receiver cannot play the original or has no sound. Files that cannot be streamed use the full conversion, which can take several minutes.")
             .setPositiveButton("Convert") { _, _ ->
                 if (current.connected) command(DirectCastService.CONVERT)
                 else { convertBeforeConnect = true; devices() }
@@ -247,7 +248,7 @@ class DirectCastActivity : AppCompatActivity(), CastControlsView.Actions {
 
     override fun help() {
         AlertDialog.Builder(this).setTitle("Casting help")
-            .setMessage("Fast cast sends the original file first.\n\nNo sound? Tap Convert to prepare stereo audio.\n\nSubtitles: Extract from movie reads compatible embedded text tracks. External SRT/WebVTT files can still be chosen from the movie folder. Bitmap subtitle formats are not yet supported.\n\nStop cancels casting and preparation. Use VLC casting is the original fallback.")
+            .setMessage("Fast cast sends the original file first.\n\nNo sound? Tap Convert: MKV movies switch to a TV-compatible stream in seconds. Tap Convert again for the full conversion.\n\nSubtitles: Extract from movie reads compatible embedded text tracks. External SRT/WebVTT files can still be chosen from the movie folder. Bitmap subtitle formats are not yet supported.\n\nStop cancels casting and preparation. Use VLC casting is the original fallback.")
             .setPositiveButton("OK", null).show()
     }
 
@@ -269,6 +270,7 @@ class DirectCastActivity : AppCompatActivity(), CastControlsView.Actions {
 
     private fun connect(host: String, port: Int, device: String) {
         if (current.active) return
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString("host", host).putInt("port", port).putString("name", device).apply()
         val uri = movieUri()?.toString()
         if (uri == null) {
             // Library Cast button: remember the receiver; the player casts the next video to it.
@@ -294,6 +296,24 @@ class DirectCastActivity : AppCompatActivity(), CastControlsView.Actions {
     }
 
     private fun name(info: NsdServiceInfo): String = info.attributes["fn"]?.let { String(it, Charsets.UTF_8) } ?: info.serviceName
+    /**
+     * The last TV used is listed immediately (it connects by address, no discovery needed) and is
+     * resolved first. mDNS discovery restarts every time this screen opens and Android resolves one
+     * device at a time, so the TV used to wait behind slow or switched-off Cast devices.
+     */
+    private fun rememberedReceiver() {
+        val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
+        val host = prefs.getString("host", null) ?: return
+        val name = prefs.getString("name", null) ?: return
+        if (receivers.values.any { name(it) == name }) return
+        runCatching {
+            @Suppress("DEPRECATION")
+            receivers[REMEMBERED + name] = NsdServiceInfo().apply {
+                serviceName = name; this.host = java.net.InetAddress.getByName(host); port = prefs.getInt("port", 8009)
+            }
+        }
+    }
+
     private fun refreshDeviceList() { deviceAdapter?.apply { clear(); addAll(receivers.values.map { name(it) }); notifyDataSetChanged() } }
 
     override fun onStart() {
@@ -307,7 +327,11 @@ class DirectCastActivity : AppCompatActivity(), CastControlsView.Actions {
             override fun onDiscoveryStopped(type: String) = Unit
             override fun onStartDiscoveryFailed(type: String, code: Int) { runOnUiThread { if (!current.active) Toast.makeText(this@DirectCastActivity, "Discovery failed. Reopen Cast to retry.", Toast.LENGTH_LONG).show() } }
             override fun onStopDiscoveryFailed(type: String, code: Int) = Unit
-            override fun onServiceFound(info: NsdServiceInfo) { runOnUiThread { if (started && generation == discoveryGeneration) { pending.add(info); resolveNext(generation) } } }
+            override fun onServiceFound(info: NsdServiceInfo) { runOnUiThread { if (started && generation == discoveryGeneration) {
+                // Resolve the TV used last before any other device.
+                if (info.serviceName == getSharedPreferences(PREFS, MODE_PRIVATE).getString("service", null)) pending.addFirst(info) else pending.add(info)
+                resolveNext(generation)
+            } } }
             override fun onServiceLost(info: NsdServiceInfo) { runOnUiThread { if (generation == discoveryGeneration) { receivers.remove(info.serviceName); refreshDeviceList() } } }
         }
         listener = discovery
@@ -318,10 +342,28 @@ class DirectCastActivity : AppCompatActivity(), CastControlsView.Actions {
     private fun resolveNext(generation: Int) {
         if (resolving || !started || generation != discoveryGeneration || pending.isEmpty()) return
         val info = pending.removeFirst(); resolving = true
-        try { nsd.resolveService(info, object : NsdManager.ResolveListener {
-            override fun onResolveFailed(service: NsdServiceInfo, code: Int) { runOnUiThread { if (generation == discoveryGeneration) { resolving = false; resolveNext(generation) } } }
-            override fun onServiceResolved(service: NsdServiceInfo) { runOnUiThread { if (started && generation == discoveryGeneration) { resolving = false; receivers[service.serviceName] = service; refreshDeviceList(); resolveNext(generation) } } }
-        }) } catch (_: Exception) { resolving = false; resolveNext(generation) }
+        var finished = false
+        val resolver = object : NsdManager.ResolveListener {
+            override fun onResolveFailed(service: NsdServiceInfo, code: Int) { runOnUiThread { if (!finished && generation == discoveryGeneration) { finished = true; resolving = false; resolveNext(generation) } } }
+            override fun onServiceResolved(service: NsdServiceInfo) { runOnUiThread { if (!finished && started && generation == discoveryGeneration) {
+                finished = true; resolving = false
+                val label = name(service)
+                receivers.entries.removeAll { it.key.startsWith(REMEMBERED) && name(it.value) == label }
+                receivers[service.serviceName] = service
+                if (label == getSharedPreferences(PREFS, MODE_PRIVATE).getString("name", null))
+                    getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString("service", service.serviceName).apply()
+                refreshDeviceList(); resolveNext(generation)
+            } } }
+        }
+        try { nsd.resolveService(info, resolver) } catch (_: Exception) { resolving = false; resolveNext(generation); return }
+        // A device that is off or asleep can hold the single resolve slot for a long time; skip it.
+        if (Build.VERSION.SDK_INT >= 34) controls.postDelayed({
+            if (!finished && generation == discoveryGeneration) {
+                finished = true; resolving = false
+                runCatching { nsd.stopServiceResolution(resolver) }
+                resolveNext(generation)
+            }
+        }, RESOLVE_TIMEOUT_MS)
     }
 
     override fun onStop() {
@@ -357,6 +399,9 @@ class DirectCastActivity : AppCompatActivity(), CastControlsView.Actions {
     companion object {
         const val REQUEST = 7391; private const val PICK_SYSTEM_SUBTITLE = 7392; private const val PICK_LOCAL_SUBTITLE = 7393
         const val EXTRA_AUTO_CONNECT = "auto_connect"
+        private const val PREFS = "vlcplus_cast"
+        private const val REMEMBERED = "remembered:"
+        private const val RESOLVE_TIMEOUT_MS = 3000L
         /** Resolved receivers survive between screens so the device list appears instantly. */
         private val knownReceivers = linkedMapOf<String, NsdServiceInfo>()
 

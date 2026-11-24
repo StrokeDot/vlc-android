@@ -19,9 +19,12 @@ public final class CastSubtitles {
             if(!m.matches())continue;
             long start=millis(m,1),end=millis(m,5);
             if(end<=start)throw new IllegalArgumentException("Subtitle end precedes start");
+            StringBuilder body=new StringBuilder();
+            for(int i=index+1;i<lines.length;i++)body.append(lines[i]).append('\n');
+            String cue=CastVttText.cue(body.toString());
+            if(cue.isEmpty())continue;
             out.append(format(start)).append(" --> ").append(format(end)).append('\n');
-            for(int i=index+1;i<lines.length;i++)out.append(lines[i]).append('\n');
-            out.append('\n');cues++;
+            out.append(cue).append("\n\n");cues++;
         }
         if(cues==0)throw new IllegalArgumentException("Choose an SRT or WebVTT subtitle file");
         return out.toString();
