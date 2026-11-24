@@ -29,13 +29,17 @@ import android.os.Bundle
 import android.view.Menu
 import android.view.MenuItem
 import android.view.View
+import android.os.Build
 import androidx.appcompat.widget.SearchView
+import org.videolan.medialibrary.interfaces.media.MediaWrapper
 import org.videolan.resources.AndroidDevices
 import org.videolan.tools.KEY_ENABLE_CASTING
 import org.videolan.tools.Settings
 import org.videolan.vlc.PlaybackService
 import org.videolan.vlc.R
 import org.videolan.vlc.RendererDelegate
+import org.videolan.vlc.cast.DirectCastActivity
+import org.videolan.vlc.cast.DirectCastService
 import org.videolan.vlc.gui.browser.MLStorageBrowserFragment
 import org.videolan.vlc.gui.dialogs.RenderersDialog
 import org.videolan.vlc.gui.helpers.UiTools
@@ -48,6 +52,7 @@ open class ContentActivity : AudioPlayerContainerActivity(), SearchView.OnQueryT
     private var showRenderers = !AndroidDevices.isChromeBook && !RendererDelegate.renderers.value.isNullOrEmpty()
     private val searchHiddenMenuItem = ArrayList<MenuItem>()
     open fun hideRenderers() = false
+    private fun isCasting() = PlaybackService.hasRenderer() || DirectCastService.state.value?.active == true
 
 
     override fun initAudioPlayerContainerActivity() {
@@ -57,7 +62,10 @@ open class ContentActivity : AudioPlayerContainerActivity(), SearchView.OnQueryT
             PlaybackService.renderer.observe(this) {
                 val item = toolbar.menu.findItem(R.id.ml_menu_renderers) ?: return@observe
                 item.isVisible = !hideRenderers() && showRenderers
-                item.setIcon(if (!PlaybackService.hasRenderer()) R.drawable.ic_renderer else R.drawable.ic_renderer_on)
+                item.setIcon(if (!isCasting()) R.drawable.ic_renderer else R.drawable.ic_renderer_on)
+            }
+            DirectCastService.state.observe(this) {
+                toolbar.menu.findItem(R.id.ml_menu_renderers)?.setIcon(if (!isCasting()) R.drawable.ic_renderer else R.drawable.ic_renderer_on)
             }
             RendererDelegate.renderers.observe(this) { rendererItems ->
                 showRenderers = !rendererItems.isNullOrEmpty()
@@ -65,6 +73,14 @@ open class ContentActivity : AudioPlayerContainerActivity(), SearchView.OnQueryT
                 if (item != null) item.isVisible = !hideRenderers() && showRenderers
             }
         }
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        // "Use VLC casting" in the new controller explicitly asks for the original renderer list.
+        if (requestCode == DirectCastActivity.REQUEST && resultCode == RESULT_FIRST_USER
+            && supportFragmentManager.findFragmentByTag("renderers") == null)
+            RenderersDialog().show(supportFragmentManager, "renderers")
     }
 
     override fun onPostCreate(savedInstanceState: Bundle?) {
@@ -101,7 +117,7 @@ open class ContentActivity : AudioPlayerContainerActivity(), SearchView.OnQueryT
         } else
             menu.findItem(R.id.ml_menu_filter).isVisible = false
         menu.findItem(R.id.ml_menu_renderers).isVisible = current !is MLStorageBrowserFragment && !hideRenderers() && showRenderers && Settings.getInstance(this).getBoolean(KEY_ENABLE_CASTING, true)
-        menu.findItem(R.id.ml_menu_renderers).setIcon(if (!PlaybackService.hasRenderer()) R.drawable.ic_renderer else R.drawable.ic_renderer_on)
+        menu.findItem(R.id.ml_menu_renderers).setIcon(if (!isCasting()) R.drawable.ic_renderer else R.drawable.ic_renderer_on)
         return true
     }
 
@@ -112,7 +128,15 @@ open class ContentActivity : AudioPlayerContainerActivity(), SearchView.OnQueryT
                 return true
             }
             R.id.ml_menu_renderers -> {
-                if (!PlaybackService.hasRenderer() && RendererDelegate.renderers.size == 1) {
+                // VLC Plus: the library Cast button opens the same controller as the player. It used to
+                // silently start the original VLC casting when exactly one receiver was found, so the
+                // player then showed the old remote screen and the new controller looked dead.
+                if (Build.VERSION.SDK_INT >= 21) {
+                    val playback = PlaybackService.serviceFlow.value
+                    val video = playback?.takeIf { it.currentMediaWrapper?.type == MediaWrapper.TYPE_VIDEO && DirectCastService.state.value?.active != true }
+                    startActivityForResult(DirectCastActivity.intent(this, video?.currentMediaLocation, video?.title,
+                        video?.getTime() ?: 0, video?.length ?: 0), DirectCastActivity.REQUEST)
+                } else if (!PlaybackService.hasRenderer() && RendererDelegate.renderers.size == 1) {
                     val renderer = RendererDelegate.renderers.value[0]
                     PlaybackService.renderer.value = renderer
                     UiTools.snacker(this, getString(R.string.casting_connected_renderer, renderer.displayName))

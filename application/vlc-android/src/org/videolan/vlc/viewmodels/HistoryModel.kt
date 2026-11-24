@@ -32,6 +32,7 @@ import org.videolan.medialibrary.interfaces.media.MediaWrapper
 import org.videolan.tools.CoroutineContextProvider
 import org.videolan.tools.PLAYBACK_HISTORY
 import org.videolan.tools.Settings
+import java.io.File
 
 class HistoryModel(context: Context, coroutineContextProvider: CoroutineContextProvider = CoroutineContextProvider()) : MedialibraryModel<MediaWrapper>(context, coroutineContextProvider) {
 
@@ -39,8 +40,33 @@ class HistoryModel(context: Context, coroutineContextProvider: CoroutineContextP
 
     override suspend fun updateList() {
         if (!Settings.getInstance(context).getBoolean(PLAYBACK_HISTORY, true)) return
-        dataset.value = withContext(coroutineContextProvider.Default) { medialibrary.history(
-            Medialibrary.HISTORY_TYPE_LOCAL).toMutableList() }
+        dataset.value = withContext(coroutineContextProvider.Default) {
+            val history = medialibrary.history(Medialibrary.HISTORY_TYPE_LOCAL).toMutableList()
+            // VLC Plus: entries for files deleted from the device are removed from history automatically.
+            val missing = history.filter { isDeleted(it) }
+            missing.forEach { runCatching { it.removeFromHistory() } }
+            history.apply { removeAll(missing) }
+        }
+    }
+
+    /**
+     * True only when a local file is definitely gone: its storage volume is present and readable but
+     * the file is not there. Unmounted SD cards/USB drives and non-file URIs are left alone, so their
+     * history survives until the storage comes back.
+     */
+    private fun isDeleted(media: MediaWrapper): Boolean {
+        val uri = media.uri ?: return false
+        if (uri.scheme != "file") return false
+        val file = File(uri.path ?: return false)
+        if (file.exists()) return false
+        val parts = file.absolutePath.split('/').filter { it.isNotEmpty() }
+        val volume = when {
+            parts.size >= 3 && parts[0] == "storage" && parts[1] == "emulated" -> File("/storage/emulated/${parts[2]}")
+            parts.size >= 2 && parts[0] == "storage" -> File("/storage/${parts[1]}")
+            parts.size >= 2 && parts[0] == "mnt" -> File("/mnt/${parts[1]}")
+            else -> return false
+        }
+        return volume.isDirectory && volume.canRead() && (volume.list()?.isNotEmpty() == true)
     }
 
     fun moveUp(media: MediaWrapper) = dataset.move(media, 0)

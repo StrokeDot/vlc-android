@@ -46,6 +46,8 @@ class CastControlsView(context: Context, private val actions: Actions) : ScrollV
     private lateinit var volumeRail: View
     private var length = 0L
     private var dragging = false
+    private val playGlyph = GlyphDrawable(Glyph.PLAY, white)
+    private val pauseGlyph = GlyphDrawable(Glyph.PAUSE, white)
 
     init {
         setBackgroundColor(Color.BLACK)
@@ -128,28 +130,40 @@ class CastControlsView(context: Context, private val actions: Actions) : ScrollV
 
     fun render(movie: String, device: String, message: String, active: Boolean, connected: Boolean,
                preparing: Boolean, playing: Boolean, position: Long, durationMs: Long, volume: Double, subtitles: Boolean) {
-        title.text = movie.ifBlank { "Cast to TV" }
-        status.text = message.ifBlank { device.ifBlank { "Choose a device" } }
+        // render() runs every second while playing; setting identical text still forces a full layout
+        // pass of this scroll view, so only touch views whose content really changed.
+        setText(title, movie.ifBlank { "Cast to TV" })
+        setText(status, message.ifBlank { device.ifBlank { "Choose a device" } })
         length = durationMs
-        duration.text = format(length)
-        if (!dragging) { elapsed.text = format(position); seek.progress = if (length > 0) (position * 1000 / length).toInt().coerceIn(0, 1000) else 0 }
+        setText(duration, format(length))
+        if (!dragging) { setText(elapsed, format(position)); seek.progress = if (length > 0) (position * 1000 / length).toInt().coerceIn(0, 1000) else 0 }
         enabled(seek, connected && length > 0); enabled(rewind, connected && length > 0); enabled(forward, connected && length > 0)
         enabled(pause, connected); enabled(stopCard, active)
         // Subtitle and conversion controls stay available during playback.
         enabled(subtitleCard, !preparing); enabled(convertCard, !preparing)
         enabled(volumeRail, connected)
-        pause.setImageDrawable(GlyphDrawable(if (playing) Glyph.PAUSE else Glyph.PLAY, white))
-        subtitleText.text = if (subtitles) (if (connected) "Subtitle • On" else "Subtitle • Ready") else "Subtitle"
-        subtitleText.setTextColor(if (subtitles) blue else muted)
-        conversionText.text = if (preparing) "Preparing…" else "Convert"
-        volumeText.text = "${(volume * 100).toInt()}%"
-        progress.visibility = if (preparing) View.VISIBLE else View.GONE
-        val percent = Regex("(\\d+)%").find(message)?.groupValues?.get(1)?.toIntOrNull()
-        progress.isIndeterminate = percent == null
-        if (percent != null) progress.progress = percent
+        val glyph = if (playing) pauseGlyph else playGlyph
+        if (pause.drawable !== glyph) pause.setImageDrawable(glyph)
+        setText(subtitleText, if (subtitles) (if (connected) "Subtitle • On" else "Subtitle • Ready") else "Subtitle")
+        val subtitleColor = if (subtitles) blue else muted
+        if (subtitleText.currentTextColor != subtitleColor) subtitleText.setTextColor(subtitleColor)
+        setText(conversionText, if (preparing) "Preparing…" else "Convert")
+        setText(volumeText, "${(volume * 100).toInt()}%")
+        val bar = if (preparing) View.VISIBLE else View.GONE
+        if (progress.visibility != bar) progress.visibility = bar
+        if (preparing) {
+            val percent = PERCENT.find(message)?.groupValues?.get(1)?.toIntOrNull()
+            if (progress.isIndeterminate != (percent == null)) progress.isIndeterminate = percent == null
+            if (percent != null) progress.progress = percent
+        }
     }
 
-    private fun enabled(view: View, value: Boolean) { view.isEnabled = value; view.alpha = if (value) 1f else 0.35f }
+    private fun setText(view: TextView, value: CharSequence) { if (!TextUtils.equals(view.text, value)) view.text = value }
+    private fun enabled(view: View, value: Boolean) {
+        if (view.isEnabled != value) view.isEnabled = value
+        val alpha = if (value) 1f else 0.35f
+        if (view.alpha != alpha) view.alpha = alpha
+    }
     private fun label(value: String, size: Float, color: Int) = TextView(context).apply { text = value; textSize = size; setTextColor(color) }
     private fun params(top: Int = 0) = LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(top) }
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
@@ -173,11 +187,12 @@ class CastControlsView(context: Context, private val actions: Actions) : ScrollV
     private enum class Glyph { BACK, CAST, STOP, SUBTITLE, CONVERT, HELP, VOLUME, PLAY, PAUSE, REWIND, FORWARD }
     private class GlyphDrawable(private val glyph: Glyph, private val color: Int) : Drawable() {
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val p = Path()
         override fun draw(canvas: Canvas) {
             val saved = canvas.save(); canvas.translate(bounds.left.toFloat(), bounds.top.toFloat()); canvas.scale(bounds.width() / 32f, bounds.height() / 32f)
             paint.color = color; paint.strokeWidth = 2f; paint.style = Paint.Style.STROKE; paint.strokeCap = Paint.Cap.ROUND
-            fun path(vararg xy: Float) { val p = Path(); p.moveTo(xy[0], xy[1]); for (i in 2 until xy.size step 2) p.lineTo(xy[i], xy[i + 1]); canvas.drawPath(p, paint) }
-            fun text(value: String, size: Float) { paint.style = Paint.Style.FILL; paint.textAlign = Paint.Align.CENTER; paint.textSize = size; paint.typeface = Typeface.create("sans-serif", Typeface.BOLD); canvas.drawText(value, 16f, 20f, paint) }
+            fun path(vararg xy: Float) { p.reset(); p.moveTo(xy[0], xy[1]); for (i in 2 until xy.size step 2) p.lineTo(xy[i], xy[i + 1]); canvas.drawPath(p, paint) }
+            fun text(value: String, size: Float) { paint.style = Paint.Style.FILL; paint.textAlign = Paint.Align.CENTER; paint.textSize = size; paint.typeface = BOLD; canvas.drawText(value, 16f, 20f, paint) }
             when (glyph) {
                 Glyph.BACK -> { path(17f, 7f, 8f, 16f, 17f, 25f); path(8f, 16f, 27f, 16f) }
                 Glyph.CAST -> { path(6f, 10f, 6f, 6f, 28f, 6f, 28f, 24f, 21f, 24f); canvas.drawArc(RectF(-9f, 12f, 19f, 40f), 270f, 90f, false, paint); canvas.drawArc(RectF(-3f, 18f, 13f, 34f), 270f, 90f, false, paint); paint.style = Paint.Style.FILL; canvas.drawCircle(5f, 26f, 2f, paint) }
@@ -199,6 +214,8 @@ class CastControlsView(context: Context, private val actions: Actions) : ScrollV
         @Deprecated("Deprecated in Android") override fun getOpacity() = PixelFormat.TRANSLUCENT
     }
     companion object {
+        private val PERCENT = Regex("(\\d+)%")
+        private val BOLD: Typeface = Typeface.create("sans-serif", Typeface.BOLD)
         @Suppress("DEPRECATION")
         fun prepareWindow(window: Window) {
             if (Build.VERSION.SDK_INT >= 30) window.setDecorFitsSystemWindows(false)

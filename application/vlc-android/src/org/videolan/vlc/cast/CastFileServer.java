@@ -8,6 +8,7 @@ import java.nio.channels.ServerSocketChannel;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicLong;
 
 /** Seekable, constant-memory local file delivery. Only unguessable registered URLs exist. */
 public final class CastFileServer implements Closeable {
@@ -16,6 +17,38 @@ public final class CastFileServer implements Closeable {
         long length();
         InputStream open(long offset) throws IOException;
     }
+    /** A stream backed by a file descriptor; lets the kernel send pages straight to the socket. */
+    public interface Channelled {
+        FileChannel channel();
+        /** Absolute channel position that corresponds to the stream's current offset. */
+        long position();
+    }
+    public abstract static class ChannelledStream extends InputStream implements Channelled {}
+    /** A named resource served under /<token>/hls/ (playlists and on-demand segments). */
+    public interface Resource {
+        long length();
+        String type();
+        InputStream open(long offset) throws IOException;
+    }
+    public interface Router { Resource resolve(String name) throws IOException; }
+    public static Resource bytes(final byte[] data,final String type){
+        return new Resource(){
+            public long length(){return data.length;}
+            public String type(){return type;}
+            public InputStream open(long offset){return new ByteArrayInputStream(data,(int)offset,data.length-(int)offset);}
+        };
+    }
+    public static Resource file(final File file,final String type) throws IOException {
+        final FileSource source=new FileSource(file);
+        return new Resource(){
+            public long length(){return source.length();}
+            public String type(){return type;}
+            public InputStream open(long offset)throws IOException{return source.open(offset);}
+        };
+    }
+    private volatile Router router;
+    /** Installs (or removes) HLS routes; returns the master playlist URL. */
+    public String setRouter(Router value){router=value;return base()+"/hls/master.m3u8";}
     public static final class FileSource implements Source {
         private final File file;
         public FileSource(File file) throws IOException {
@@ -26,7 +59,9 @@ public final class CastFileServer implements Closeable {
         public InputStream open(long offset) throws IOException {
             final RandomAccessFile input=new RandomAccessFile(file,"r");
             try{input.seek(offset);}catch(IOException e){input.close();throw e;}
-            return new InputStream(){
+            return new ChannelledStream(){
+                public FileChannel channel(){return input.getChannel();}
+                public long position(){return offset;}
                 public int read()throws IOException{return input.read();}
                 public int read(byte[] b,int start,int length)throws IOException{return input.read(b,start,length);}
                 public void close()throws IOException{input.close();}
@@ -36,8 +71,19 @@ public final class CastFileServer implements Closeable {
     private final Source source;
     private final String mime,secret=UUID.randomUUID().toString();
     private volatile byte[] subtitles=new byte[0];
+    private final AtomicLong mediaGets=new AtomicLong();
+    private final AtomicLong mediaHeads=new AtomicLong();
+    private final AtomicLong mediaBytes=new AtomicLong();
+    private final AtomicLong mediaReadFailures=new AtomicLong();
+    /** Aggregate local-only diagnostics: no file names, tokens or user URLs. */
+    public long mediaGetCount(){return mediaGets.get();}
+    public long mediaHeadCount(){return mediaHeads.get();}
+    public long mediaBytesServed(){return mediaBytes.get();}
+    public long mediaFailureCount(){return mediaReadFailures.get();}
     private final Set<Socket> sockets=Collections.newSetFromMap(new ConcurrentHashMap<Socket,Boolean>());
-    private final ExecutorService workers=new ThreadPoolExecutor(1,4,30,TimeUnit.SECONDS,new SynchronousQueue<Runnable>());
+    // Receivers open overlapping range requests while seeking (and old ones linger until their socket
+    // times out). Four workers rejected the next request, which surfaced as stalls after seeks.
+    private final ExecutorService workers=new ThreadPoolExecutor(2,16,30,TimeUnit.SECONDS,new SynchronousQueue<Runnable>());
     private volatile boolean closed;
     public CastFileServer(InetAddress address,File file,String mime) throws IOException {
         this(address,new FileSource(file),mime);
@@ -48,11 +94,16 @@ public final class CastFileServer implements Closeable {
         try{server.bind(new InetSocketAddress(address,0),8);}catch(IOException e){server.close();throw e;}
         Thread thread=new Thread(()->{
             while(!closed){
-                try{Socket socket=server.accept();socket.setSoTimeout(15000);sockets.add(socket);
+                try{Socket socket=server.accept();socket.setSoTimeout(15000);tune(socket);sockets.add(socket);
                     try{workers.execute(()->serve(socket));}catch(RejectedExecutionException e){sockets.remove(socket);socket.close();}
                 }catch(IOException e){if(!closed)close();}
             }
         },"VLC-Plus-Cast-HTTP");thread.setDaemon(true);thread.start();
+    }
+    private static void tune(Socket socket){
+        // Headers are tiny and latency-sensitive; video needs a deep send queue on Wi-Fi.
+        try{socket.setTcpNoDelay(true);}catch(IOException ignored){}
+        try{socket.setSendBufferSize(1024*1024);}catch(IOException ignored){}
     }
     public String token(){return secret;}
     private String base(){String host=server.getInetAddress().getHostAddress();if(host.contains(":"))host="["+host+"]";return "http://"+host+":"+server.getLocalPort()+"/"+secret;}
@@ -60,17 +111,24 @@ public final class CastFileServer implements Closeable {
     public String setSubtitles(String vtt){subtitles=vtt.getBytes(StandardCharsets.UTF_8);return base()+"/subtitles.vtt";}
     private void serve(Socket socket){
         try(Socket ignored=socket){
-            InputStream in=socket.getInputStream();String first=line(in);
+            // Buffered: header parsing reads byte-by-byte, which was one syscall per byte per request.
+            InputStream in=new BufferedInputStream(socket.getInputStream(),2048);String first=line(in);
             String[] request=first.split(" ");if(request.length!=3)return;
             Map<String,String> headers=new HashMap<>();int size=first.length();
             for(String s;(s=line(in)).length()>0;){size+=s.length();if(size>16384)return;int colon=s.indexOf(':');if(colon>0)headers.put(s.substring(0,colon).toLowerCase(Locale.ROOT),s.substring(colon+1).trim());}
             boolean media=request[1].equals("/"+secret+"/media"),sub=request[1].equals("/"+secret+"/subtitles.vtt");
+            String hlsPrefix="/"+secret+"/hls/";Router routes=router;Resource routed=null;
+            if(!media&&!sub&&routes!=null&&request[1].startsWith(hlsPrefix)&&!request[1].contains("..")){
+                try{routed=routes.resolve(request[1].substring(hlsPrefix.length()));}
+                catch(IOException e){OutputStream o=socket.getOutputStream();head(o,503,"Service Unavailable",0,null,null,headers.get("origin"));return;}
+            }
             OutputStream out=socket.getOutputStream();
             String origin=headers.get("origin");
-            if(!media&&!sub){head(out,404,"Not Found",0,null,null,origin);return;}
+            if(!media&&!sub&&routed==null){head(out,404,"Not Found",0,null,null,origin);return;}
             if(request[0].equals("OPTIONS")){head(out,204,"No Content",0,null,null,origin);return;}
             if(!request[0].equals("GET")&&!request[0].equals("HEAD")){head(out,405,"Method Not Allowed",0,null,null,origin);return;}
-            byte[] text=subtitles;long length=media?source.length():text.length,start=0,end=length-1;boolean partial=false;
+            if(media||routed!=null){if(request[0].equals("GET"))mediaGets.incrementAndGet();else mediaHeads.incrementAndGet();}
+            byte[] text=subtitles;long length=routed!=null?routed.length():media?source.length():text.length,start=0,end=length-1;boolean partial=false;
             String range=headers.get("range");
             if(range!=null){
                 try{
@@ -82,27 +140,32 @@ public final class CastFileServer implements Closeable {
                 }catch(IllegalArgumentException e){head(out,416,"Range Not Satisfiable",0,null,"bytes */"+length,origin);return;}
             }
             long count=Math.max(0,end-start+1);
-            head(out,partial?206:200,partial?"Partial Content":"OK",count,media?mime:"text/vtt; charset=utf-8",partial?"bytes "+start+"-"+end+"/"+length:null,origin);
+            head(out,partial?206:200,partial?"Partial Content":"OK",count,routed!=null?routed.type():media?mime:"text/vtt; charset=utf-8",partial?"bytes "+start+"-"+end+"/"+length:null,origin);
             if(request[0].equals("HEAD"))return;
-            if(media){
+            if(media||routed!=null){
                 long sent=0;
-                // Let the kernel deliver file pages directly; avoid a Java read/copy per chunk.
-                if(source instanceof FileSource && socket.getChannel()!=null){
-                    try(RandomAccessFile input=new RandomAccessFile(((FileSource)source).file,"r")){
-                        FileChannel file=input.getChannel();
-                        while(sent<count&&!closed){
-                            long n=file.transferTo(start+sent,Math.min(8L*1024*1024,count-sent),socket.getChannel());
-                            if(n<=0)break; // Some providers/platforms need the portable copy path.
-                            sent+=n;
-                        }
+                try(InputStream input=routed!=null?routed.open(start):source.open(start)){
+                    // Let the kernel deliver file pages directly (files and content-URI descriptors alike);
+                    // avoid a Java read/copy per chunk.
+                    if(input instanceof Channelled && socket.getChannel()!=null){
+                        FileChannel file=((Channelled)input).channel();long base=((Channelled)input).position();
+                        try{
+                            while(sent<count&&!closed){
+                                long n=file.transferTo(base+sent,Math.min(8L*1024*1024,count-sent),socket.getChannel());
+                                if(n<=0)break; // Some providers/platforms need the portable copy path.
+                                sent+=n;mediaBytes.addAndGet(n);
+                            }
+                        }catch(IOException e){if(sent>0||closed)throw e;} // Nothing sent yet: fall back below.
+                    }
+                    if(sent<count){
+                        if(sent>0&&input instanceof Channelled)((Channelled)input).channel().position(((Channelled)input).position()+sent);
+                        byte[] buf=new byte[256*1024];long left=count-sent;
+                        while(left>0&&!closed){int n=input.read(buf,0,(int)Math.min(buf.length,left));if(n<0)break;out.write(buf,0,n);left-=n;mediaBytes.addAndGet(n);}
                     }
                 }
-                if(sent<count)try(InputStream input=source.open(start+sent)){
-                byte[] buf=new byte[128*1024];long left=count-sent;
-                while(left>0&&!closed){int n=input.read(buf,0,(int)Math.min(buf.length,left));if(n<0)break;out.write(buf,0,n);left-=n;}
-            }}else if(count>0)out.write(text,(int)start,(int)count);
+            }else if(count>0)out.write(text,(int)start,(int)count);
             out.flush();
-        }catch(IOException ignored){}finally{sockets.remove(socket);}
+        }catch(IOException ignored){mediaReadFailures.incrementAndGet();}finally{sockets.remove(socket);}
     }
     private static String line(InputStream input)throws IOException{
         ByteArrayOutputStream out=new ByteArrayOutputStream();int c;

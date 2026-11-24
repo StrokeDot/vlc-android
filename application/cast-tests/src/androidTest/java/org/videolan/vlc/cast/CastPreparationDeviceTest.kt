@@ -28,10 +28,10 @@ class CastPreparationDeviceTest {
             val data = ByteBuffer.allocate(1024 * 1024)
             val digest = MessageDigest.getInstance("SHA-256")
             var count = 0; var first = -1L; var last = -1L
-            while (extractor.sampleTime >= 0) {
+            while (extractor.sampleTrackIndex >= 0) {
                 data.clear(); val n = extractor.readSampleData(data, 0); if (n < 0) break
                 data.position(0); data.limit(n); digest.update(data)
-                if (first < 0) first = extractor.sampleTime
+                if (count == 0) first = extractor.sampleTime
                 last = extractor.sampleTime; count++; extractor.advance()
             }
             return Samples(count, digest.digest().joinToString("") { "%02x".format(it) }, first, last, mime)
@@ -108,7 +108,9 @@ class CastPreparationDeviceTest {
         try {
             val input = File(folder, name)
             instrumentation.context.assets.open(name).use { source -> input.outputStream().use { source.copyTo(it) } }
-            val prepared = CastPreparation.prepare(context, Uri.fromFile(input), folder, forceAudio, {}, {})
+            val prepared = if (forceAudio)
+                CastAudioPreparation.prepare(context, Uri.fromFile(input), folder, {}, {})
+            else CastPreparation.prepare(context, Uri.fromFile(input), folder, false, {}, {})
             assertEquals("video/mp4", prepared.mime)
             assertNotEquals(input.path, prepared.file.path)
             assertTrue(prepared.file.length() > 0)
@@ -124,9 +126,23 @@ class CastPreparationDeviceTest {
         assertTrue(audio.last - audio.first > 1_700_000)
     }
 
-    @Test fun containerPreparationCopiesVideoAndCompatibleAudio() = fixture("cast-fixture.mkv", false) { input, output ->
+    @Test fun surroundAacStillConvertsToAudibleStereo() = fixture("cast-aac-surround.mp4", true) { input, output ->
+        assertSameVideo(input, output)
+        val extractor = MediaExtractor()
+        try {
+            extractor.setDataSource(output.path)
+            val audio = (0 until extractor.trackCount).first {
+                extractor.getTrackFormat(it).getString(MediaFormat.KEY_MIME) == "audio/mp4a-latm"
+            }
+            assertEquals(2, extractor.getTrackFormat(audio).getInteger(MediaFormat.KEY_CHANNEL_COUNT))
+        } finally { extractor.release() }
+        assertTrue("Converted surround audio must be audible", decoded(output, "audio/").peak > 256)
+    }
+
+    @Test fun compatibleAacPreparationCopiesAudioAndPreservesSeekTimeline() = fixture("cast-fixture.mkv", true) { input, output ->
         assertEquals(samples(input, "video/"), samples(output, "video/"))
-        assertEquals(samples(input, "audio/").hash, samples(output, "audio/").hash)
+        assertEquals("Compatible AAC samples must be copied without another lossy encode",
+            samples(input, "audio/"), samples(output, "audio/"))
     }
 
     @Test fun dolbyMatroskaKeepsVideoAndProducesRealStereoAudio() {
@@ -140,7 +156,7 @@ class CastPreparationDeviceTest {
             output.copyTo(File(context.getExternalFilesDir(null), "cast-dolby-output.mp4"), overwrite = true)
             assertSameVideo(input, output)
             assertTrue(CastVideoValidation.matches(input, output, {}))
-            assertEquals("Expected platform AAC output", "platform-aac.mp4", output.name)
+            assertEquals("Expected stable VLC AAC output", "pipelined.mp4", output.name)
             val audio = samples(output, "audio/")
             assertEquals("audio/mp4a-latm", audio.mime)
             assertTrue("Converted audio must contain an audible signal", decoded(output, "audio/").peak > 256)
@@ -181,7 +197,7 @@ class CastPreparationDeviceTest {
             instrumentation.context.assets.open("cast-dolby.mkv").use { source -> input.outputStream().use { source.copyTo(it) } }
             try {
                 CastAudioPreparation.prepare(context, Uri.fromFile(input), folder, {
-                    if (File(folder, "platform-aac.mp4").exists()) throw java.util.concurrent.CancellationException("Cancel fixture")
+                    if (File(folder, "pipelined.mp4").exists()) throw java.util.concurrent.CancellationException("Cancel fixture")
                 }, {})
                 fail("Preparation must propagate cancellation")
             } catch (_: java.util.concurrent.CancellationException) { }
@@ -270,6 +286,30 @@ class CastPreparationDeviceTest {
         } finally { root.deleteRecursively() }
     }
 
+    @Test fun embeddedSubRipInRealMatroskaCanBeExtractedToWebVtt() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val context = instrumentation.targetContext
+        val folder = File(context.cacheDir, "embedded-subtitle-${System.nanoTime()}").apply { mkdirs() }
+        try {
+            val movie = File(folder, "embedded-text.mkv")
+            instrumentation.context.assets.open("embedded-text.mkv").use { input ->
+                movie.outputStream().use { output -> input.copyTo(output) }
+            }
+            val uri = Uri.fromFile(movie)
+            val tracks = CastEmbeddedSubtitles.tracks(context, uri)
+            assertTrue("Android must expose the real MKV embedded SRT track", tracks.any { it.format == "SRT" })
+            val subtitles = CastEmbeddedSubtitles.extract(context, uri, tracks.first { it.format == "SRT" }.index)
+            assertTrue(subtitles.startsWith("WEBVTT\n\n"))
+            assertTrue(subtitles.contains("00:00:00.200 --> 00:00:01.100"))
+            assertTrue(subtitles.contains("00:00:01.500 --> 00:00:02.600"))
+            assertTrue(subtitles.contains("Embedded hello"))
+            assertTrue(subtitles.contains("Second subtitle"))
+            assertTrue(subtitles.contains("-->"))
+        } finally {
+            folder.deleteRecursively()
+        }
+    }
+
     @Test fun compareTwoMinutePreparationPaths() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val context = instrumentation.targetContext
@@ -280,14 +320,14 @@ class CastPreparationDeviceTest {
             val legacy = File(folder, "legacy").apply { mkdirs() }
             val fast = File(folder, "fast").apply { mkdirs() }
             val started = android.os.SystemClock.elapsedRealtime()
-            val old = CastPipelinedPreparation.prepare(context, input, legacy, {}, {}).file
-            val oldDuration = android.os.SystemClock.elapsedRealtime() - started
+            val experimental = CastPipelinedPreparation.prepare(context, input, legacy, {}, {}, platformEncoder = true).file
+            val experimentalDuration = android.os.SystemClock.elapsedRealtime() - started
             val begin = android.os.SystemClock.elapsedRealtime()
             val output = CastAudioPreparation.prepare(context, Uri.fromFile(input), fast, {}, {}).file
-            val newDuration = android.os.SystemClock.elapsedRealtime() - begin
-            android.util.Log.i("VLCPlus/CastPerf", "fixture=120s-60fps baselineVersion=9 baselineMs=$oldDuration platformMs=$newDuration inputBytes=${input.length()}")
-            assertEquals("platform-aac.mp4", output.name)
-            assertTrue(CastVideoValidation.matches(input, old, {}))
+            val stableDuration = android.os.SystemClock.elapsedRealtime() - begin
+            android.util.Log.i("VLCPlus/CastPerf", "fixture=120s-60fps pcmExperimentalMs=$experimentalDuration stableVlcAacMs=$stableDuration inputBytes=${input.length()}")
+            assertEquals("pipelined.mp4", output.name)
+            assertTrue(CastVideoValidation.matches(input, experimental, {}))
             assertTrue(CastVideoValidation.matches(input, output, {}))
             assertTrue(decoded(output, "audio/").peak > 256)
             val completeAudio = samples(output, "audio/")

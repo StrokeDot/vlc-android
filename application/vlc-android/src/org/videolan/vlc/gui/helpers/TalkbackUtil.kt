@@ -98,7 +98,11 @@ object TalkbackUtil {
             if (files < 1 && folders < 1) text = text.talkbackAppend(context.getString(R.string.empty_directory))
         } else {
             text = context.getString(R.string.talkback_file, folder.title)
-            if (!folder.description.isNullOrEmpty()) text = text.talkbackAppend(context.getString(R.string.talkback_file_size, folder.description))
+            val description = folder.description
+            if (!description.isNullOrEmpty()) {
+                val badge = context.getString(R.string.new_downloads_badge)
+                text = text.talkbackAppend(if (description == badge) badge else context.getString(R.string.talkback_file_size, description))
+            }
         }
         return text
     }

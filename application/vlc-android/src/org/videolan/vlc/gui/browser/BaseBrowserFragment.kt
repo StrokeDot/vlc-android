@@ -92,6 +92,7 @@ import org.videolan.tools.removeFileScheme
 import org.videolan.vlc.BuildConfig
 import org.videolan.vlc.PlaybackService
 import org.videolan.vlc.R
+import org.videolan.vlc.cast.EmbeddedSubtitleExportDialog
 import org.videolan.vlc.databinding.DirectoryBrowserBinding
 import org.videolan.vlc.gui.AudioPlayerContainerActivity
 import org.videolan.vlc.gui.MainActivity
@@ -123,6 +124,7 @@ import org.videolan.vlc.interfaces.IEventsHandler
 import org.videolan.vlc.interfaces.IRefreshable
 import org.videolan.vlc.media.MediaUtils
 import org.videolan.vlc.media.PlaylistManager
+import org.videolan.vlc.providers.NEW_DOWNLOADS_LOCATION
 import org.videolan.vlc.repository.BrowserFavRepository
 import org.videolan.vlc.util.ContextOption
 import org.videolan.vlc.util.ContextOption.CTX_ADD_FOLDER_AND_SUB_PLAYLIST
@@ -133,6 +135,7 @@ import org.videolan.vlc.util.ContextOption.CTX_APPEND
 import org.videolan.vlc.util.ContextOption.CTX_BAN_FOLDER
 import org.videolan.vlc.util.ContextOption.CTX_DELETE
 import org.videolan.vlc.util.ContextOption.CTX_DOWNLOAD_SUBTITLES
+import org.videolan.vlc.util.ContextOption.CTX_EXTRACT_SUBTITLES
 import org.videolan.vlc.util.ContextOption.CTX_FAV_ADD
 import org.videolan.vlc.util.ContextOption.CTX_FAV_REMOVE
 import org.videolan.vlc.util.ContextOption.CTX_FIND_METADATA
@@ -184,6 +187,7 @@ abstract class BaseBrowserFragment : MediaBrowserFragment<BrowserModel>(), IRefr
         }
     protected lateinit var adapter: BaseBrowserAdapter
     protected abstract val categoryTitle: String
+    protected val isNewDownloads get() = mrl == NEW_DOWNLOADS_LOCATION
 
     protected lateinit var binding: DirectoryBrowserBinding
     protected lateinit var browserFavRepository: BrowserFavRepository
@@ -246,7 +250,7 @@ abstract class BaseBrowserFragment : MediaBrowserFragment<BrowserModel>(), IRefr
         menu.findItem(R.id.ml_menu_filter)?.isVisible = enableSearchOption()
         menu.findItem(R.id.ml_menu_sortby)?.isVisible = false
         menu.findItem(R.id.ml_menu_sortby_media_number)?.isVisible = false
-        menu.findItem(R.id.ml_menu_add_playlist)?.isVisible = !isRootDirectory
+        menu.findItem(R.id.ml_menu_add_playlist)?.isVisible = !isRootDirectory && !isNewDownloads
         addPlaylistFolderOnly = menu.findItem(R.id.folder_add_playlist)
         addPlaylistFolderOnly.isVisible = adapter.mediaCount > 0
 
@@ -519,7 +523,7 @@ abstract class BaseBrowserFragment : MediaBrowserFragment<BrowserModel>(), IRefr
      */
     protected open fun updateEmptyView() {
         binding.emptyLoading.emptyText = viewModel.filterQuery?.let { getString(R.string.empty_search, it) }
-                ?: getString(R.string.nomedia)
+                ?: getString(if (isNewDownloads) R.string.new_downloads_empty else R.string.nomedia)
         swipeRefreshLayout.let {
             when {
                 !Permissions.canReadStorage(requireActivity()) -> binding.emptyLoading.state = EmptyLoadingState.MISSING_PERMISSION
@@ -673,7 +677,7 @@ abstract class BaseBrowserFragment : MediaBrowserFragment<BrowserModel>(), IRefr
 
             R.id.ml_menu_display_options -> {
                 //filter all sorts and keep only applicable ones
-                val sorts = arrayListOf(Medialibrary.SORT_ALPHA, Medialibrary.SORT_FILENAME)
+                val sorts = if (isNewDownloads) emptyList() else listOf(Medialibrary.SORT_ALPHA, Medialibrary.SORT_FILENAME)
                 val settings = Settings.getInstance(requireActivity())
 
                 //Open the display settings Bottom sheet
@@ -683,8 +687,8 @@ abstract class BaseBrowserFragment : MediaBrowserFragment<BrowserModel>(), IRefr
                     sorts = sorts,
                     currentSort = viewModel.provider.sort.takeIf { it != 0 } ?: Medialibrary.SORT_FILENAME,
                     currentSortDesc = viewModel.provider.desc,
-                    showOnlyMultimediaFiles = settings.getBoolean(BROWSER_SHOW_ONLY_MULTIMEDIA, false),
-                    showHiddenFiles = settings.getBoolean(BROWSER_SHOW_HIDDEN_FILES, true),
+                    showOnlyMultimediaFiles = if (isNewDownloads) null else settings.getBoolean(BROWSER_SHOW_ONLY_MULTIMEDIA, false),
+                    showHiddenFiles = if (isNewDownloads) null else settings.getBoolean(BROWSER_SHOW_HIDDEN_FILES, true),
                     defaultPlaybackActions = DefaultPlaybackActionMediaType.FILE.getDefaultPlaybackActions(settings),
                     defaultActionType = getString(R.string.files)
                 )
@@ -822,7 +826,11 @@ abstract class BaseBrowserFragment : MediaBrowserFragment<BrowserModel>(), IRefr
                     if (isMedia) addAll(CTX_ADD_TO_PLAYLIST, CTX_APPEND, CTX_INFORMATION, CTX_PLAY_ALL)
                     if (!isAudio && isMedia) add(CTX_PLAY_AS_AUDIO)
                     if (!isMedia) add(CTX_PLAY)
-                    if (isVideo) add(CTX_DOWNLOAD_SUBTITLES)
+                    if (isVideo) {
+                        add(CTX_DOWNLOAD_SUBTITLES)
+                        if (mw.uri.scheme in listOf("file", "content"))
+                            add(CTX_EXTRACT_SUBTITLES)
+                    }
                     if ((isVideo || mw.isPodcast) && mw.seen > 0L) add(ContextOption.CTX_MARK_AS_UNPLAYED)
                     if ((isVideo || mw.isPodcast) && mw.seen == 0L) add(ContextOption.CTX_MARK_AS_PLAYED)
                 }
@@ -884,6 +892,7 @@ abstract class BaseBrowserFragment : MediaBrowserFragment<BrowserModel>(), IRefr
 
             CTX_ADD_TO_PLAYLIST -> requireActivity().addToPlaylist(mw.tracks, SavePlaylistDialog.KEY_NEW_TRACKS)
             CTX_DOWNLOAD_SUBTITLES -> MediaUtils.getSubs(requireActivity(), mw)
+            CTX_EXTRACT_SUBTITLES -> EmbeddedSubtitleExportDialog.show(requireActivity(), mw.uri, mw.title)
             CTX_FAV_REMOVE -> lifecycleScope.launch(Dispatchers.IO) { browserFavRepository.deleteBrowserFav(mw.uri) }
             CTX_ADD_SCANNED -> addToScannedFolders(mw)
             CTX_FIND_METADATA -> {

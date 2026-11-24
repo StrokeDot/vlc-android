@@ -5,6 +5,9 @@ import android.annotation.TargetApi
 import android.content.Context
 import android.media.*
 import android.net.Uri
+import android.os.SystemClock
+import android.provider.OpenableColumns
+import android.util.Log
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -21,13 +24,35 @@ internal object CastPreparation {
         val input = when (local.scheme) {
             "file", null -> File(requireNotNull(local.path))
             "content" -> File(directory, "source").also { file ->
-                progress("Reading video…")
+                val started = SystemClock.elapsedRealtime()
+                val size = runCatching {
+                    context.contentResolver.query(local, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { cursor ->
+                        if (cursor.moveToFirst() && !cursor.isNull(0)) cursor.getLong(0).takeIf { it > 0 } else null
+                    }
+                }.getOrNull()
+                progress("Reading video from storage…")
+                var copied = 0L
+                var lastProgress = started
                 context.contentResolver.openInputStream(local)?.use { source ->
                     file.outputStream().use { output ->
                         val buffer = ByteArray(256 * 1024)
-                        while (true) { check(); val n = source.read(buffer); if (n < 0) break; output.write(buffer, 0, n) }
+                        while (true) {
+                            check()
+                            val n = source.read(buffer)
+                            if (n < 0) break
+                            output.write(buffer, 0, n)
+                            copied += n
+                            val now = SystemClock.elapsedRealtime()
+                            if (now - lastProgress >= 1000) {
+                                val detail = if (size != null) "${(copied * 100 / size).coerceIn(0, 99)}%"
+                                    else "${copied / (1024 * 1024)} MiB"
+                                progress("Reading video from storage… $detail")
+                                lastProgress = now
+                            }
+                        }
                     }
                 } ?: error("The video cannot be opened")
+                Log.i("VLCPlus/CastPerf", "stage=source-staging bytes=$copied elapsedMs=${SystemClock.elapsedRealtime() - started}")
             }
             else -> error("Direct casting needs a local video. Use VLC casting for this network stream.")
         }
@@ -55,19 +80,52 @@ internal object CastPreparation {
             val videoMime = probe.getTrackFormat(video).getString(MediaFormat.KEY_MIME)
             require(videoMime in listOf("video/avc", "video/hevc", "video/mp4v-es")) { "This video format needs VLC casting" }
             val audioMime = audio?.let { audioSource.getTrackFormat(it).getString(MediaFormat.KEY_MIME) }
-            if (audio != null && (convertAudio || audioMime != "audio/mp4a-latm")) {
+            if (audio != null && (audioMime != "audio/mp4a-latm" ||
+                    convertAudio && !canCopyAac(input, audio, audioSource.getTrackFormat(audio)))) {
                 progress("Preparing audio for TV… 0%")
                 try { convert(input, output, video, audio, rotation, check, progress, pcmAudio) }
                 catch (e: java.util.concurrent.CancellationException) { throw e }
                 catch (e: Exception) { throw AudioUnsupported(input, e) }
             } else {
                 progress("Preparing video for TV… 0%")
+                val started = SystemClock.elapsedRealtime()
                 remux(probe, output, video, audio, rotation, check, progress)
+                Log.i("VLCPlus/CastPerf", "path=sample-copy-remux elapsedMs=${SystemClock.elapsedRealtime() - started} inputBytes=${input.length()}")
             }
         } finally { probe.release() }
         check()
         return Prepared(output, "video/mp4")
     }
+
+    /** Only bypass conversion for unambiguous, commonly supported AAC-LC configurations. */
+    private fun canCopyAac(input: File, track: Int, format: MediaFormat): Boolean = runCatching {
+        val channels = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+        if (channels !in 1..2) return@runCatching false
+        val frequencyIndex = when (format.getInteger(MediaFormat.KEY_SAMPLE_RATE)) {
+            48000 -> 3
+            44100 -> 4
+            else -> return@runCatching false
+        }
+        if (format.containsKey(MediaFormat.KEY_AAC_PROFILE) &&
+            format.getInteger(MediaFormat.KEY_AAC_PROFILE) != MediaCodecInfo.CodecProfileLevel.AACObjectLC) return@runCatching false
+        val config = format.getByteBuffer("csd-0")?.duplicate() ?: return@runCatching false
+        if (config.remaining() < 2) return@runCatching false
+        val first = config.get().toInt() and 255
+        val second = config.get().toInt() and 255
+        val objectType = first ushr 3
+        val configuredFrequency = ((first and 7) shl 1) or (second ushr 7)
+        val configuredChannels = (second ushr 3) and 15
+        if (objectType != MediaCodecInfo.CodecProfileLevel.AACObjectLC ||
+            configuredFrequency != frequencyIndex || configuredChannels != channels) return@runCatching false
+        // The existing MP4 writer normalizes negative timestamps. Keep the
+        // established conversion path when a source needs AAC priming samples.
+        val audio = MediaExtractor()
+        try {
+            audio.setDataSource(input.path)
+            audio.selectTrack(track)
+            audio.sampleTrackIndex >= 0 && audio.sampleTime >= 0
+        } finally { audio.release() }
+    }.getOrDefault(false)
 
     /** Attach finished AAC; the caller only supplies a file, this method owns its extractor. */
     fun withAudio(input: File, compatibleAudio: File, directory: File, check: () -> Unit,
@@ -238,6 +296,8 @@ internal object CastPreparation {
             var encoderDone = false
             var pendingIndex = -1
             var pcm: ByteBuffer? = null
+            var downmixIn = ShortArray(0)
+            var downmixOut = ShortArray(0)
             var pcmTime = 0L
             var pcmFrames = 0L
             var pendingEos = false
@@ -337,20 +397,16 @@ internal object CastPreparation {
                             bytes.put(source)
                             source.limit(limit)
                         } else {
-                            for (frame in 0 until frames) {
-                                var left = 0.0; var right = 0.0
-                                for (channel in 0 until channels) {
-                                    val value = source.short.toInt()
-                                    when (channel) {
-                                        0 -> left += value; 1 -> right += value
-                                        2 -> { left += value * 0.707; right += value * 0.707 }
-                                        4 -> left += value * 0.707; 5 -> right += value * 0.707
-                                        6 -> left += value * 0.5; 7 -> right += value * 0.5
-                                    }
-                                }
-                                bytes.putShort((left / 2.5).toInt().coerceIn(-32768, 32767).toShort())
-                                bytes.putShort((right / 2.5).toInt().coerceIn(-32768, 32767).toShort())
-                            }
+                            // Bulk copy + fixed-point math. The previous per-sample ByteBuffer.getShort and
+                            // double arithmetic ran billions of times for a feature-length 5.1 track.
+                            val samples = frames * channels
+                            val mixIn = if (downmixIn.size >= samples) downmixIn else ShortArray(samples).also { downmixIn = it }
+                            val mixOut = if (downmixOut.size >= frames * 2) downmixOut else ShortArray(frames * 2).also { downmixOut = it }
+                            source.asShortBuffer().get(mixIn, 0, samples)
+                            source.position(source.position() + samples * 2)
+                            CastDownmix.toStereo(mixIn, mixOut, frames, channels)
+                            bytes.asShortBuffer().put(mixOut, 0, frames * 2)
+                            bytes.position(bytes.position() + frames * 4)
                         }
                         enc.queueInputBuffer(index, 0, bytes.position(), pcmTime + pcmFrames * 1000000L / sampleRate, 0)
                         pcmFrames += frames

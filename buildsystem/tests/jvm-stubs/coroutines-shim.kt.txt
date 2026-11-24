@@ -1,0 +1,32 @@
+@file:Suppress("UNUSED_PARAMETER")
+package kotlinx.coroutines
+import kotlin.coroutines.*
+typealias CancellationException = java.util.concurrent.CancellationException
+/** Test-only, thread-per-launch shim: suspend calls here never truly suspend. */
+interface Job : CoroutineContext.Element { val isActive: Boolean; fun cancel(cause: CancellationException? = null)
+  companion object Key : CoroutineContext.Key<Job> }
+class SimpleJob(parent: SimpleJob?) : Job {
+  override val key get() = Job
+  @Volatile var active = true; @Volatile var thread: Thread? = null
+  private val children = java.util.concurrent.CopyOnWriteArrayList<SimpleJob>()
+  init { parent?.children?.add(this) }
+  override val isActive get() = active
+  override fun cancel(cause: CancellationException?) { active = false; children.forEach { it.cancel(null) }; thread?.takeIf { it != Thread.currentThread() }?.interrupt() }
+}
+interface CoroutineScope { val coroutineContext: CoroutineContext }
+private class ScopeImpl(val job: SimpleJob) : CoroutineScope { override val coroutineContext: CoroutineContext get() = job }
+fun CoroutineScope(c: CoroutineContext): CoroutineScope = ScopeImpl((c[Job] as? SimpleJob) ?: SimpleJob(null))
+fun SupervisorJob(parent: Job? = null): Job = SimpleJob(parent as? SimpleJob)
+object Dispatchers { val IO: CoroutineContext = EmptyCoroutineContext }
+fun CoroutineScope.launch(context: CoroutineContext = EmptyCoroutineContext, block: suspend CoroutineScope.() -> Unit): Job {
+  val child = SimpleJob(coroutineContext[Job] as SimpleJob)
+  val t = Thread { block.startCoroutine(ScopeImpl(child), Continuation(child) { it.exceptionOrNull()?.let { e -> if (e !is CancellationException && e !is InterruptedException) e.printStackTrace() } }) }
+  child.thread = t; t.isDaemon = true; t.start(); return child
+}
+suspend fun delay(ms: Long) { try { Thread.sleep(ms) } catch (e: InterruptedException) { throw CancellationException("cancelled") }; if (coroutineContext[Job]?.isActive == false) throw CancellationException() }
+val CoroutineScope.isActive: Boolean get() = coroutineContext[Job]?.isActive != false
+fun CoroutineScope.ensureActive() { if (!isActive) throw CancellationException() }
+fun CoroutineScope.cancel(cause: CancellationException? = null) { coroutineContext[Job]?.cancel(cause) }
+suspend fun <R> coroutineScope(block: suspend CoroutineScope.() -> R): R {
+  val child = SimpleJob(coroutineContext[Job] as SimpleJob); child.thread = Thread.currentThread(); return ScopeImpl(child).block()
+}

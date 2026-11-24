@@ -34,8 +34,10 @@ import android.view.ViewGroup
 import androidx.appcompat.view.ActionMode
 import androidx.core.content.edit
 import androidx.core.net.toUri
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -70,6 +72,8 @@ import org.videolan.vlc.gui.view.EmptyLoadingState
 import org.videolan.vlc.gui.view.EmptyLoadingStateView
 import org.videolan.vlc.gui.view.TitleListView
 import org.videolan.vlc.media.MediaUtils
+import org.videolan.vlc.providers.NEW_DOWNLOADS_LOCATION
+import org.videolan.vlc.providers.loadNewDownloads
 import org.videolan.vlc.repository.BrowserFavRepository
 import org.videolan.vlc.util.ContextOption
 import org.videolan.vlc.util.ContextOption.CTX_ADD_FOLDER_AND_SUB_PLAYLIST
@@ -225,14 +229,26 @@ class MainBrowserFragment : BaseFragment(), View.OnClickListener, CtxActionRecei
         val storageBrowserAdapter = BaseBrowserAdapter(storageBrowserContainer)
         localEntry.list.adapter = storageBrowserAdapter
         containerAdapterAssociation[storageBrowserContainer] = Pair(storageBrowserAdapter, localViewModel)
-        localViewModel.dataset.observe(viewLifecycleOwner) { list ->
-            list?.let {
-                if (Permissions.canReadStorage(requireActivity())) storageBrowserAdapter.update(it)
-                localEntry.loading.state = when {
-                    !Permissions.canReadStorage(requireActivity()) -> EmptyLoadingState.MISSING_PERMISSION
-                    list.isNotEmpty() -> EmptyLoadingState.NONE
-                    localViewModel.loading.value == true -> EmptyLoadingState.LOADING
-                    else -> EmptyLoadingState.EMPTY
+        var newDownloadsCount: Int? = null
+        fun updateStorageEntries(list: List<MediaLibraryItem>) {
+            if (!Permissions.canReadStorage(requireActivity())) {
+                localEntry.loading.state = EmptyLoadingState.MISSING_PERMISSION
+                return
+            }
+            val newDownloads = MediaWrapperImpl(NEW_DOWNLOADS_LOCATION.toUri()).apply {
+                title = getString(R.string.new_downloads)
+                type = MediaWrapper.TYPE_DIR
+                newDownloadsCount?.let { description = localViewModel.provider.getDescription(0, it) }
+            }
+            storageBrowserAdapter.update(list + newDownloads)
+            localEntry.loading.state = EmptyLoadingState.NONE
+        }
+        localViewModel.dataset.observe(viewLifecycleOwner) { updateStorageEntries(it.orEmpty()) }
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                if (Permissions.canReadStorage(requireActivity())) {
+                    newDownloadsCount = loadNewDownloads(requireContext()).size
+                    updateStorageEntries(localViewModel.dataset.value)
                 }
             }
         }
@@ -387,7 +403,7 @@ class MainBrowserFragment : BaseFragment(), View.OnClickListener, CtxActionRecei
         override fun onClick(v: View, position: Int, item: MediaLibraryItem) {
             val mediaWrapper = item as MediaWrapper
             if (actionMode != null) {
-                if (!checkAdapterForActionMode()) return
+                if (mediaWrapper.location == NEW_DOWNLOADS_LOCATION || !checkAdapterForActionMode()) return
                 val adapter = requireAdapter()
                 if (mediaWrapper.type == MediaWrapper.TYPE_AUDIO ||
                         mediaWrapper.type == MediaWrapper.TYPE_VIDEO ||
@@ -417,6 +433,7 @@ class MainBrowserFragment : BaseFragment(), View.OnClickListener, CtxActionRecei
         override fun onLongClick(v: View, position: Int, item: MediaLibraryItem): Boolean {
             if (item.itemType != MediaLibraryItem.TYPE_MEDIA) return false
             val mediaWrapper = item as MediaWrapper
+            if (mediaWrapper.location == NEW_DOWNLOADS_LOCATION) return false
             if (mediaWrapper.type == MediaWrapper.TYPE_AUDIO ||
                     mediaWrapper.type == MediaWrapper.TYPE_VIDEO ||
                     mediaWrapper.type == MediaWrapper.TYPE_DIR) {
